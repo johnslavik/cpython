@@ -409,7 +409,7 @@ class Syntax(ThemeSection):
     string: str = ANSIColors.GREEN
     number: str = ANSIColors.YELLOW
     op: str = ANSIColors.RESET
-    matched_bracket: str = ANSIColors.BOLD_CYAN
+    matched_bracket: str = ANSIColors.BOLD
     definition: str = ANSIColors.BOLD
     soft_keyword: str = ANSIColors.BOLD_BLUE
     reset: str = ANSIColors.RESET
