@@ -38,7 +38,14 @@ from .content import (
 )
 from .layout import LayoutMap, LayoutResult, LayoutRow, WrappedRow, layout_content_lines
 from .render import RenderCell, RenderLine, RenderedScreen, ScreenOverlay
-from .utils import ANSI_ESCAPE_SEQUENCE, ColorSpan, THEME, StyleRef, gen_colors
+from .utils import (
+    ANSI_ESCAPE_SEQUENCE,
+    ColorSpan,
+    THEME,
+    StyleRef,
+    find_matching_brackets,
+    gen_colors,
+)
 from .trace import trace
 
 
@@ -486,6 +493,24 @@ class Reader:
             col = self.pos
         return col, lineno
 
+    def _matched_bracket_positions(self) -> set[int]:
+        """Return buffer positions of the bracket pair to highlight, or empty set.
+
+        Uses the cursor position (self.pos) to decide which bracket (if any)
+        is 'active': checks the char before the cursor, then the char at cursor.
+        Only returns a pair when a structural match is found by the tokenizer.
+        """
+        buf = self.get_unicode()
+        if not buf:
+            return set()
+        matches = find_matching_brackets(buf)
+        for candidate in (self.pos, self.pos - 1):
+            if 0 <= candidate < len(buf) and candidate in matches:
+                other = matches[candidate]
+                if 0 <= other < len(buf):
+                    return {candidate, other}
+        return set()
+
     def _build_source_lines(
         self,
         offset: int,
@@ -536,7 +561,17 @@ class Reader:
         prompt_from_cache: bool,
     ) -> tuple[ContentLine, ...]:
         if self.can_colorize:
-            colors = list(self.gen_colors(self.get_unicode()))
+            colors_list: list[ColorSpan] = list(self.gen_colors(self.get_unicode()))
+            matched = self._matched_bracket_positions()
+            if matched:
+                colors = [
+                    ColorSpan(cs.span, "matched_bracket")
+                    if cs.span.start in matched
+                    else cs
+                    for cs in colors_list
+                ]
+            else:
+                colors = colors_list
         else:
             colors = None
         trace("colors = {colors}", colors=colors)
@@ -921,6 +956,10 @@ class Reader:
             return  # nothing to do
 
         command = command_type(self, *cmd)  # type: ignore[arg-type]
+
+        old_matched: set[int] = set()
+        if self.can_colorize:
+            old_matched = self._matched_bracket_positions()
         command.do()
 
         self.after_command(command)
@@ -928,7 +967,17 @@ class Reader:
             not self.invalidation.needs_screen_refresh
             and not self.invalidation.is_cursor_only
         ):
-            self.invalidate_cursor()
+            if self.can_colorize:
+                new_matched = self._matched_bracket_positions()
+                if old_matched != new_matched:
+                    # Bracket match state changed: styles of cells must be repainted
+                    affected = old_matched | new_matched | {self.pos}
+                    from_pos = min(affected) if affected else 0
+                    self.invalidate_buffer(from_pos)
+                else:
+                    self.invalidate_cursor()
+            else:
+                self.invalidate_cursor()
         self.update_screen()
 
         if command_type is not commands.digit_arg:

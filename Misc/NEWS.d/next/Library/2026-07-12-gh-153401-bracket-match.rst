@@ -1,0 +1,4 @@
+Add support for brace, bracket and parenthesis matching to the interactive
+interpreter. When the cursor is adjacent to a ``(``, ``[`` or ``{`` (or its
+closing counterpart), the matching delimiter is highlighted using the new
+``matched_bracket`` entry in the color theme (bold cyan by default).

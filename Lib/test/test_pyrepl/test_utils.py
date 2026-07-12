@@ -1,6 +1,12 @@
 from unittest import TestCase
 
-from _pyrepl.utils import str_width, wlen, prev_next_window, gen_colors
+from _pyrepl.utils import (
+    find_matching_brackets,
+    gen_colors,
+    prev_next_window,
+    str_width,
+    wlen,
+)
 
 
 class TestUtils(TestCase):
@@ -159,3 +165,40 @@ class TestUtils(TestCase):
                     span_text = code[color.span.start:color.span.end + 1]
                     actual_highlights.append((span_text, color.tag))
                 self.assertEqual(actual_highlights, expected_highlights)
+
+
+class TestBracketMatching(TestCase):
+    def test_simple_pairs(self):
+        buf = "(a + [b {c}])"
+        matches = find_matching_brackets(buf)
+        self.assertEqual(matches, {0: 12, 12: 0, 5: 11, 11: 5, 8: 10, 10: 8})
+
+    def test_no_match_partial(self):
+        buf = "f(x"
+        matches = find_matching_brackets(buf)
+        self.assertEqual(matches, {})
+
+    def test_cursor_independent(self):
+        # Returns all matched pairs, selection of which to highlight is up to caller
+        buf = "([{}])"
+        matches = find_matching_brackets(buf)
+        self.assertEqual(len(matches), 6)
+
+    def test_ignores_inside_strings_and_comments(self):
+        buf = 'x = " ( [ { "  # ) ] } \n y = (1)'
+        matches = find_matching_brackets(buf)
+        # only the final ( )
+        self.assertIn(buf.rfind("("), matches)
+        self.assertEqual(len([p for p in matches if p < len(buf)]), 2)
+
+    def test_nested_and_mismatch_recovery(self):
+        buf = "( [ ) ]"
+        matches = find_matching_brackets(buf)
+        # no valid pairs due to mismatch order
+        self.assertEqual(matches, {})
+
+    def test_fstring_expression_brackets(self):
+        buf = 'f"{(1+2)}"'
+        matches = find_matching_brackets(buf)
+        # the ( ) inside the expression should be matched
+        self.assertTrue(any(buf[i] == "(" for i in matches))

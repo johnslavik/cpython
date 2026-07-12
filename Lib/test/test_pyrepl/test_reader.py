@@ -631,3 +631,34 @@ class TestReaderInColor(ScreenEqualMixin, TestCase):
         reader, _ = handle_all_events(events)
         self.assert_screen_equal(reader, 'flag = "🏳️\\u200d🌈"', clean=True)
         self.assert_screen_equal(reader, 'flag {o}={z} {s}"🏳️\\u200d🌈"{z}'.format(**colors))
+
+    def test_bracket_matching_highlight(self):
+        # When cursor is on/after a bracket, its match gets matched_bracket style
+        reader, _ = handle_all_events(code_to_events("f([1])"))
+        # (decorator ensures colorization; explicit set for safety)
+        reader.can_colorize = True
+        # cursor after last ), should highlight the outer ()
+        reader.pos = len(reader.buffer)
+        reader.invalidate_buffer(0)
+        base = reader.calc_screen()
+        reader.rendered_screen = reader.compose_rendered_screen(base)
+        tags = []
+        for line in reader.rendered_screen.lines:
+            for cell in line.cells:
+                if cell.text in "()[]":
+                    tags.append((cell.text, cell.style.tag))
+        # outer () should be matched
+        self.assertIn(("(", "matched_bracket"), tags)
+        self.assertIn((")", "matched_bracket"), tags)
+        # move to the [
+        reader.pos = 2
+        reader.invalidate_buffer(0)
+        base = reader.calc_screen()
+        reader.rendered_screen = reader.compose_rendered_screen(base)
+        tags = []
+        for line in reader.rendered_screen.lines:
+            for cell in line.cells:
+                if cell.text in "()[]":
+                    tags.append((cell.text, cell.style.tag))
+        self.assertIn(("[", "matched_bracket"), tags)
+        self.assertIn(("]", "matched_bracket"), tags)

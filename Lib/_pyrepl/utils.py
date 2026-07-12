@@ -454,3 +454,54 @@ class StyleRef:
     @property
     def is_plain(self) -> bool:
         return self.tag is None and not self.sgr
+
+
+def find_matching_brackets(buffer: str) -> dict[int, int]:
+    """Return a dict mapping each bracket's buffer position to its match.
+
+    Only brackets that are tokenize.OP tokens (i.e. not inside strings,
+    comments or f-string literals content) and have a properly matched
+    partner within the buffer are included.
+    """
+    matches: dict[int, int] = {}
+    if not buffer:
+        return matches
+
+    sio = StringIO(buffer)
+    # Build cumulative line lengths (same approach as gen_colors)
+    line_lengths = [0]
+    for line in sio:
+        line_lengths.append(line_lengths[-1] + len(line))
+    sio.seek(0)
+
+    try:
+        gen = tokenize.generate_tokens(sio.readline)
+    except (SyntaxError, tokenize.TokenError):
+        return matches
+
+    stack: list[tuple[str, int]] = []  # (bracket_char, start_pos)
+    try:
+        for tok in gen:
+            if tok.type != T.OP or tok.start == tok.end:
+                continue
+            ch = tok.string
+            pos = line_lengths[tok.start[0] - 1] + tok.start[1]
+            if ch in "([{":
+                stack.append((ch, pos))
+            elif ch in ")]}":
+                if not stack:
+                    continue
+                open_ch, open_pos = stack[-1]
+                if ((open_ch == "(" and ch == ")") or
+                        (open_ch == "[" and ch == "]") or
+                        (open_ch == "{" and ch == "}")):
+                    stack.pop()
+                    matches[open_pos] = pos
+                    matches[pos] = open_pos
+                else:
+                    # Mismatched closer; pop to allow recovery on further input
+                    stack.pop()
+    except (SyntaxError, tokenize.TokenError):
+        # Unterminated construct (common in REPL); return pairs completed so far.
+        pass
+    return matches
