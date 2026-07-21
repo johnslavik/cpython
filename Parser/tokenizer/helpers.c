@@ -1,10 +1,12 @@
 #include "Python.h"
 #include "errcode.h"
+#include "pycore_fileutils.h"     // _Py_read()
 #include "pycore_runtime.h"       // _Py_ID()
 #include "pycore_token.h"
 #include "pycore_tuple.h"         // _PyTuple_FromPair
 
 #include "../lexer/state.h"
+#include "tokenizer.h"
 
 
 /* ############## ERRORS ############## */
@@ -487,6 +489,66 @@ _PyTokenizer_check_coding_spec(const char* line, Py_ssize_t size, struct tok_sta
         PyMem_Free(cs);
     }
     return 1;
+}
+
+/* Get the encoding of a Python file from its BOM or coding cookie.
+
+   Return NULL when neither is present, in which case UTF-8 should be used.
+   A non-NULL result is allocated with PyMem_Malloc() and must be freed by the
+   caller.  The descriptor is borrowed, but its file position is advanced. */
+char *
+_PyTokenizer_FindEncodingFilename(int fd, PyObject *filename)
+{
+    PyBytesWriter *writer = PyBytesWriter_Create(0);
+    if (writer == NULL) {
+        return NULL;
+    }
+    char buffer[BUFSIZ];
+    int lines = 0;
+    while (lines < 2) {
+        Py_ssize_t size = _Py_read(fd, buffer, sizeof(buffer));
+        if (size <= 0) {
+            if (size < 0) {
+                PyBytesWriter_Discard(writer);
+                return NULL;
+            }
+            break;
+        }
+        if (PyBytesWriter_WriteBytes(writer, buffer, size) < 0) {
+            PyBytesWriter_Discard(writer);
+            return NULL;
+        }
+        for (Py_ssize_t i = 0; i < size; i++) {
+            lines += buffer[i] == '\n';
+        }
+    }
+    PyObject *source = PyBytesWriter_Finish(writer);
+    if (source == NULL) {
+        return NULL;
+    }
+    if (memchr(PyBytes_AS_STRING(source), '\0', PyBytes_GET_SIZE(source)) != NULL) {
+        PyErr_SetString(PyExc_SyntaxError,
+                        "source code cannot contain null bytes");
+        goto error;
+    }
+
+    struct tok_state *tok = _PyTokenizer_FromString(
+        PyBytes_AS_STRING(source), 1, 0);
+    if (tok == NULL) {
+        goto error;
+    }
+    char *encoding = tok->encoding;
+    tok->encoding = NULL;
+    _PyTokenizer_Free(tok);
+    Py_DECREF(source);
+    return encoding;
+
+error:
+    if (PyErr_Occurred()) {
+        _PyTokenizer_raise_init_error(filename);
+    }
+    Py_DECREF(source);
+    return NULL;
 }
 
 /* Check whether the characters at s start a valid

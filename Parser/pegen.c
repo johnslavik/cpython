@@ -1049,62 +1049,6 @@ _PyPegen_run_parser(Parser *p)
 }
 
 mod_ty
-_PyPegen_run_parser_from_file_pointer(FILE *fp, int start_rule, PyObject *filename_ob,
-                             const char *enc, const char *ps1, const char *ps2,
-                             PyCompilerFlags *flags, int *errcode,
-                             PyObject **interactive_src, PyArena *arena)
-{
-    struct tok_state *tok = _PyTokenizer_FromFile(fp, enc, ps1, ps2);
-    if (tok == NULL) {
-        if (PyErr_Occurred()) {
-            _PyTokenizer_raise_init_error(filename_ob);
-        }
-        else {
-            // The only silent tokenizer init failure is a failed allocation.
-            PyErr_NoMemory();
-        }
-        return NULL;
-    }
-    if (!tok->fp || ps1 != NULL || ps2 != NULL ||
-        PyUnicode_CompareWithASCIIString(filename_ob, "<stdin>") == 0) {
-        tok->fp_interactive = 1;
-    }
-    // This transfers the ownership to the tokenizer
-    tok->filename = Py_NewRef(filename_ob);
-
-    // From here on we need to clean up even if there's an error
-    mod_ty result = NULL;
-
-    tok->module = PyUnicode_FromString("__main__");
-    if (tok->module == NULL) {
-        goto error;
-    }
-
-    int parser_flags = compute_parser_flags(flags);
-    Parser *p = _PyPegen_Parser_New(tok, start_rule, parser_flags, PY_MINOR_VERSION,
-                                    errcode, NULL, arena);
-    if (p == NULL) {
-        goto error;
-    }
-
-    result = _PyPegen_run_parser(p);
-    _PyPegen_Parser_Free(p);
-
-    if (tok->fp_interactive && tok->interactive_src_start && result && interactive_src != NULL) {
-        *interactive_src = PyUnicode_FromString(tok->interactive_src_start);
-        if (!*interactive_src || _PyArena_AddPyObject(arena, *interactive_src) < 0) {
-            Py_XDECREF(*interactive_src);
-            result = NULL;
-            goto error;
-        }
-    }
-
-error:
-    _PyTokenizer_Free(tok);
-    return result;
-}
-
-mod_ty
 _PyPegen_run_parser_from_string(const char *str, int start_rule, PyObject *filename_ob,
                        PyCompilerFlags *flags, PyArena *arena, PyObject *module)
 {
@@ -1147,5 +1091,118 @@ _PyPegen_run_parser_from_string(const char *str, int start_rule, PyObject *filen
 
 error:
     _PyTokenizer_Free(tok);
+    return result;
+}
+
+static PyObject *
+read_source(FILE *fp, PyObject *filename)
+{
+    PyBytesWriter *writer = PyBytesWriter_Create(0);
+    if (writer == NULL) {
+        return NULL;
+    }
+
+    char buffer[BUFSIZ];
+    size_t size;
+    while ((size = fread(buffer, 1, sizeof(buffer), fp)) != 0) {
+        if (PyBytesWriter_WriteBytes(writer, buffer, (Py_ssize_t)size) < 0) {
+            PyBytesWriter_Discard(writer);
+            return NULL;
+        }
+    }
+    if (ferror(fp)) {
+        PyBytesWriter_Discard(writer);
+        PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError, filename);
+        return NULL;
+    }
+    return PyBytesWriter_Finish(writer);
+}
+
+static int
+check_null_bytes(PyObject *source, PyObject *filename)
+{
+    const char *str = PyBytes_AS_STRING(source);
+    const char *null_byte = memchr(str, '\0', PyBytes_GET_SIZE(source));
+    if (null_byte == NULL) {
+        return 0;
+    }
+
+    const char *line_start = str;
+    int lineno = 1;
+    for (const char *p = str; p < null_byte; p++) {
+        if (*p == '\n') {
+            lineno++;
+            line_start = p + 1;
+        }
+    }
+    PyErr_SetString(PyExc_SyntaxError,
+                    "source code cannot contain null bytes");
+    PyErr_SyntaxLocationObject(filename, lineno, -1);
+    PyObject *exc = PyErr_GetRaisedException();
+    PyObject *text = PyUnicode_DecodeUTF8(
+        line_start, null_byte - line_start, "replace");
+    if (text == NULL || PyObject_SetAttr(exc, &_Py_ID(text), text) < 0) {
+        PyErr_Clear();
+    }
+    Py_XDECREF(text);
+    PyErr_SetRaisedException(exc);
+    return -1;
+}
+
+mod_ty
+_PyPegen_run_parser_from_file_pointer(FILE *fp, int start_rule, PyObject *filename_ob,
+                                      const char *enc, const char *ps1, const char *ps2,
+                                      PyCompilerFlags *flags, int *errcode,
+                                      PyObject **interactive_src, PyArena *arena)
+{
+    PyObject *source;
+    if (ps1 != NULL || ps2 != NULL) {
+        char *line = PyOS_Readline(fp, stdout, ps1 != NULL ? ps1 : "");
+        if (line == NULL || line[0] == '\0') {
+            PyMem_Free(line);
+            if (errcode != NULL) {
+                *errcode = E_EOF;
+            }
+            return NULL;
+        }
+        source = PyBytes_FromString(line);
+        PyMem_Free(line);
+    }
+    else {
+        source = read_source(fp, filename_ob);
+    }
+    if (source == NULL) {
+        return NULL;
+    }
+    if (PyBytes_GET_SIZE(source) == 0 && errcode != NULL) {
+        *errcode = E_EOF;
+        Py_DECREF(source);
+        return NULL;
+    }
+    if (check_null_bytes(source, filename_ob) < 0) {
+        Py_DECREF(source);
+        return NULL;
+    }
+
+    PyObject *module = PyUnicode_FromString("__main__");
+    if (module == NULL) {
+        Py_DECREF(source);
+        return NULL;
+    }
+    mod_ty result = _PyPegen_run_parser_from_string(
+        PyBytes_AS_STRING(source), start_rule, filename_ob, flags, arena, module);
+    Py_DECREF(module);
+    if (result != NULL && interactive_src != NULL) {
+        *interactive_src = PyUnicode_Decode(
+            PyBytes_AS_STRING(source), PyBytes_GET_SIZE(source),
+            enc != NULL ? enc : "utf-8", "replace");
+        if (*interactive_src == NULL
+            || _PyArena_AddPyObject(arena, *interactive_src) < 0)
+        {
+            Py_CLEAR(*interactive_src);
+            result = NULL;
+        }
+    }
+    Py_DECREF(source);
     return result;
 }

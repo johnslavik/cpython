@@ -131,10 +131,11 @@ class EOFTestCase(unittest.TestCase):
             file_name = script_helper.make_script(temp_dir, 'foo', '\\')
             rc, out, err = script_helper.assert_python_failure('-X', 'utf8', file_name)
             err = err.decode().splitlines()
-            self.assertEqual(err[-2:], [
+            self.assertEqual(err[-3:], [
                 '    \\',
+                '     ^',
                 'SyntaxError: unexpected EOF while parsing'])
-            self.assertEqual(err[-3][-8:], ', line 1', err)
+            self.assertEqual(err[-4][-8:], ', line 1', err)
 
             file_name = script_helper.make_script(temp_dir, 'foo', 'ä = 6\\')
             rc, out, err = script_helper.assert_python_failure('-X', 'utf8', file_name)

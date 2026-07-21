@@ -57,7 +57,7 @@
 #define MAX_FRAME_DEPTH 100
 #define DEFAULT_MAX_NTHREADS 100
 
-/* Function from Parser/tokenizer/file_tokenizer.c */
+/* Function from Parser/tokenizer/helpers.c */
 extern char* _PyTokenizer_FindEncodingFilename(int, PyObject *);
 
 /*[clinic input]

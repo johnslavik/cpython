@@ -2050,7 +2050,7 @@ PyErr_ProgramText(const char *filename, int lineno)
     return res;
 }
 
-/* Function from Parser/tokenizer/file_tokenizer.c */
+/* Function from Parser/tokenizer/helpers.c */
 extern char* _PyTokenizer_FindEncodingFilename(int, PyObject *);
 
 PyObject *

@@ -130,7 +130,6 @@ def compile_c_extension(
         str(MOD_DIR.parent.parent.parent / "Parser" / "lexer" / "string.c"),
         str(MOD_DIR.parent.parent.parent / "Parser" / "lexer" / "buffer.c"),
         str(MOD_DIR.parent.parent.parent / "Parser" / "tokenizer" / "string_tokenizer.c"),
-        str(MOD_DIR.parent.parent.parent / "Parser" / "tokenizer" / "file_tokenizer.c"),
         str(MOD_DIR.parent.parent.parent / "Parser" / "tokenizer" / "utf8_tokenizer.c"),
         str(MOD_DIR.parent.parent.parent / "Parser" / "tokenizer" / "readline_tokenizer.c"),
         str(MOD_DIR.parent.parent.parent / "Parser" / "tokenizer" / "helpers.c"),

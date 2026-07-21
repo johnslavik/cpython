@@ -398,7 +398,6 @@ TOKENIZER_OBJS=		\
 		Parser/lexer/number.o \
 		Parser/lexer/state.o \
 		Parser/lexer/string.o \
-		Parser/tokenizer/file_tokenizer.o \
 		Parser/tokenizer/readline_tokenizer.o \
 		Parser/tokenizer/string_tokenizer.o \
 		Parser/tokenizer/utf8_tokenizer.o \
