@@ -1452,7 +1452,6 @@ class TracebackException:
         line, offset, source = self._exc_metadata
         end_line = int(self.lineno) if self.lineno is not None else 0
         lines = None
-        from_filename = False
 
         if source is None:
             if self.filename:
@@ -1461,9 +1460,7 @@ class TracebackException:
                         lines = f.read().splitlines()
                 except Exception:
                     line, end_line, offset = 0,1,0
-                else:
-                    from_filename = True
-            lines = lines if lines is not None else self.text.splitlines()
+                    lines = self.text.splitlines()
         else:
             lines = source.splitlines()
 
@@ -1489,10 +1486,6 @@ class TracebackException:
         for token in tokens:
             start, end = token.start, token.end
             if token.type != tokenize.NAME:
-                continue
-            # Only consider NAME tokens on the same line as the error
-            the_end = end_line if line == 0 else end_line + 1
-            if from_filename and token.start[0]+line != the_end:
                 continue
             wrong_name = token.string
             if wrong_name in keyword.kwlist:

@@ -1827,6 +1827,7 @@ class TestKeywordTypoSuggestions(unittest.TestCase):
         ("function f():", "def"),
         ("func f():", "def"),
         ("void f():", "def"),
+        ("iff \\\nx: pass", "if")
     ]
 
     def test_keyword_suggestions_from_file(self):
