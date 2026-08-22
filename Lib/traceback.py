@@ -19,6 +19,7 @@ import pathlib
 
 from contextlib import suppress
 lazy import _colorize
+lazy import difflib
 
 try:
     from _missing_stdlib_info import _MISSING_STDLIB_MODULE_MESSAGES
@@ -1413,6 +1414,27 @@ class TracebackException:
             for ex in self.exceptions:
                 yield from ex.format_exception_only(show_group=show_group, _depth=_depth+1, colorize=colorize)
 
+    @staticmethod
+    def _find_keyword_matches_for_typo(wrong_name, suggestionslib=None):
+        matches = []
+        hint = _get_cross_language_keyword_hint(wrong_name)
+        if hint:
+            matches.append(hint)
+        if suggestionslib is not None:
+            suggestion = suggestionslib._generate_suggestions(keyword.kwlist + keyword.softkwlist, wrong_name)
+            if suggestion:
+                matches.append(suggestion)
+        matches.extend(
+            difflib.get_close_matches(
+                wrong_name,
+                keyword.kwlist + keyword.softkwlist,
+                n=4,
+                cutoff=0.5
+            )
+        )
+        matches[:] = dict.fromkeys(matches)  # dedupe
+        return matches
+
     def _find_keyword_typos(self):
         assert self._is_syntax_error
         try:
@@ -1464,7 +1486,6 @@ class TracebackException:
         error_lines = error_code.splitlines()
         tokens = tokenize.generate_tokens(io.StringIO(error_code).readline)
         tokens_left_to_process = 10
-        import difflib
         for token in tokens:
             start, end = token.start, token.end
             if token.type != tokenize.NAME:
@@ -1482,27 +1503,12 @@ class TracebackException:
             tokens_left_to_process -= 1
             if tokens_left_to_process < 0:
                 break
-            # Limit the number of possible matches to try
-            max_matches = 3
-            matches = []
 
-            hint = _get_cross_language_keyword_hint(wrong_name)
-            if hint:
-                matches.append(hint)
-            if _suggestions is not None:
-                suggestion = _suggestions._generate_suggestions(keyword.kwlist + keyword.softkwlist, wrong_name)
-                if suggestion:
-                    matches.append(suggestion)
-            matches.extend(
-                difflib.get_close_matches(
-                    wrong_name,
-                    keyword.kwlist + keyword.softkwlist,
-                    n=max_matches,
-                    cutoff=0.5
-                )
-            )
-            matches = matches[:max_matches]
-            for suggestion in matches:
+            suggestions_left_to_process = 5
+            for suggestion in self._find_keyword_matches_for_typo(
+                wrong_name,
+                suggestionslib=_suggestions,
+            ):
                 if not suggestion or suggestion == wrong_name:
                     continue
                 # Try to replace the token with the keyword
@@ -1517,6 +1523,9 @@ class TracebackException:
                 try:
                     codeop.compile_command(code, symbol="exec", flags=codeop.PyCF_ONLY_AST)
                 except SyntaxError:
+                    suggestions_left_to_process -= 1
+                    if suggestions_left_to_process < 0:
+                        break
                     continue
 
                 # Keep token.line but handle offsets correctly
