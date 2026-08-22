@@ -2,7 +2,6 @@
 
 import collections.abc
 import functools
-import heapq
 import itertools
 import linecache
 import os
@@ -20,7 +19,6 @@ import pathlib
 
 from contextlib import suppress
 lazy import _colorize
-lazy import difflib
 
 try:
     from _missing_stdlib_info import _MISSING_STDLIB_MODULE_MESSAGES
@@ -1429,9 +1427,10 @@ class TracebackException:
         if not self._exc_metadata:
             return
 
-        line, _, source = self._exc_metadata
+        line, offset, source = self._exc_metadata
         end_line = int(self.lineno) if self.lineno is not None else 0
         lines = None
+        from_filename = False
 
         if source is None:
             if self.filename:
@@ -1439,7 +1438,9 @@ class TracebackException:
                     with open(self.filename) as f:
                         lines = f.read().splitlines()
                 except Exception:
-                    line, end_line, _ = 0,1,0
+                    line, end_line, offset = 0,1,0
+                else:
+                    from_filename = True
             lines = lines if lines is not None else self.text.splitlines()
         else:
             lines = source.splitlines()
@@ -1461,32 +1462,26 @@ class TracebackException:
             return  # Original code compiles or is incomplete - can't validate fixes
 
         error_lines = error_code.splitlines()
-        tokens = []
-        offset = self.end_offset
-        try:
-            for token in tokenize.generate_tokens(io.StringIO(error_code).readline):
-                if token.type != tokenize.NAME:
-                    continue
-                if keyword.iskeyword(token.string):
-                    continue
-                # Only consider NAME tokens on the same line as the error
-                the_end = end_line if line == 0 else end_line + 1
-                if token.start[0] + line != the_end:
-                    continue
-                rank = abs(offset - token.end[1])
-                heapq.heappush(tokens, (rank, token))
-        except Exception:
-            pass
+        tokens = tokenize.generate_tokens(io.StringIO(error_code).readline)
         tokens_left_to_process = 10
-        while tokens:
-            rank, token = heapq.heappop(tokens)
+        import difflib
+        for token in tokens:
+            start, end = token.start, token.end
+            if token.type != tokenize.NAME:
+                continue
+            # Only consider NAME tokens on the same line as the error
+            the_end = end_line if line == 0 else end_line + 1
+            if from_filename and token.start[0]+line != the_end:
+                continue
             wrong_name = token.string
+            if wrong_name in keyword.kwlist:
+                continue
+
             # Limit the number of valid tokens to consider to not spend
             # to much time in this function
             tokens_left_to_process -= 1
             if tokens_left_to_process < 0:
                 break
-            start, end = token.start, token.end
             # Limit the number of possible matches to try
             max_matches = 3
             matches = []
