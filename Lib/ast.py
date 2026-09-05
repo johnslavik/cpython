@@ -336,15 +336,18 @@ def get_docstring(node, clean=True):
     If *clean* is `True`, all tabs are expanded to spaces and any whitespace
     that can be uniformly removed from the second line onwards is removed.
     """
-    if not isinstance(node, (AsyncFunctionDef, FunctionDef, ClassDef, Module)):
-        raise TypeError("%r can't have docstrings" % node.__class__.__name__)
-    if not(node.body and isinstance(node.body[0], Expr)):
-        return None
-    node = node.body[0].value
-    if isinstance(node, Constant) and isinstance(node.value, str):
-        text = node.value
-    else:
-        return None
+    match node:
+        case TypeAlias(doc=text):
+            if text is None:
+                return None
+        case AsyncFunctionDef(body=body) | FunctionDef(body=body) | ClassDef(body=body) | Module(body=body):
+            match body:
+                case [Expr(value=Constant(value=str() as text)), *_]:
+                    pass  # The pattern binds the docstring to text.
+                case _:
+                    return None
+        case _:
+            raise TypeError(f"{node.__class__.__name__!r} can't have docstrings")
     if clean:
         import inspect
         text = inspect.cleandoc(text)

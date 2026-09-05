@@ -680,7 +680,7 @@ keyword_pattern[KeyPatternPair*]:
 type_alias[stmt_ty]:
     | "type" n=NAME t=[type_params] '=' b=expression {
         CHECK_VERSION(stmt_ty, 12, "Type statement is",
-        _PyAST_TypeAlias(CHECK(expr_ty, _PyPegen_set_expr_context(p, n, Store)), t, b, EXTRA)) }
+        _PyAST_TypeAlias(CHECK(expr_ty, _PyPegen_set_expr_context(p, n, Store)), t, b, NULL, EXTRA)) }
 
 # Type parameter declaration
 # --------------------------

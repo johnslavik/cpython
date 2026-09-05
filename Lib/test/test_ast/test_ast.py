@@ -43,12 +43,24 @@ STDLIB_FILES.extend(["test/test_grammar.py", "test/test_unpack_ex.py"])
 
 AST_REPR_DATA_FILE = Path(__file__).parent / "data" / "ast_repr.txt"
 
-def ast_repr_get_test_cases() -> list[str]:
-    return exec_tests + eval_tests
+def docstring_guard_cases():
+    for source in (
+        '"primary"\n"additional"',
+        'class C:\n    "primary"\n    "additional"',
+        'def f():\n    "primary"\n    "additional"',
+        'async def f():\n    "primary"\n    "additional"',
+        'type Alias = int\n"primary"\n"additional"',
+    ):
+        yield source, 2
+
+
+def ast_repr_get_test_cases() -> list[tuple[str, int]]:
+    return [(source, 0) for source in exec_tests + eval_tests] + list(docstring_guard_cases())
 
 
 def ast_repr_update_snapshots() -> None:
-    data = [repr(ast.parse(test)) for test in ast_repr_get_test_cases()]
+    data = [repr(ast.parse(source, optimize=optimize))
+            for source, optimize in ast_repr_get_test_cases()]
     AST_REPR_DATA_FILE.write_text("\n".join(data))
 
 
@@ -1145,9 +1157,28 @@ class AST_Tests(unittest.TestCase):
 
     def test_repr(self) -> None:
         snapshots = AST_REPR_DATA_FILE.read_text().split("\n")
-        for test, snapshot in zip(ast_repr_get_test_cases(), snapshots, strict=True):
-            with self.subTest(test_input=test):
-                self.assertEqual(repr(ast.parse(test, optimize=False)), snapshot)
+        for (source, optimize), snapshot in zip(
+                ast_repr_get_test_cases(), snapshots, strict=True):
+            with self.subTest(test_input=source, optimize=optimize):
+                self.assertEqual(repr(ast.parse(source, optimize=optimize)), snapshot)
+
+    def test_docstring_guard_recompilation(self):
+        for source, optimize in docstring_guard_cases():
+            with self.subTest(source=source, optimize=optimize):
+                tree = ast.parse(source, optimize=optimize)
+                first = tree.body[0]
+                target = first if isinstance(first, (ast.ClassDef, ast.FunctionDef,
+                    ast.AsyncFunctionDef, ast.TypeAlias)) else tree
+                self.assertIsNone(ast.get_docstring(target))
+                self.assertTrue(any(isinstance(node, ast.JoinedStr)
+                                    for node in ast.walk(tree)))
+                ns = {}
+                exec(compile(tree, "<guard>", "exec", optimize=0), ns)
+                if target is tree:
+                    self.assertIsNone(ns.get("__doc__"))
+                else:
+                    name = target.name.id if isinstance(target, ast.TypeAlias) else target.name
+                    self.assertIsNone(ns[name].__doc__)
 
     def test_repr_large_input_crash(self):
         # gh-125010: Fix use-after-free in ast repr()

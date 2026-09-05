@@ -1103,12 +1103,18 @@ Statements
                 Pass()])
 
 
-.. class:: TypeAlias(name, type_params, value)
+.. class:: TypeAlias(name, type_params, value, doc=None)
 
    A :ref:`type alias <type-aliases>` created through the :keyword:`type`
    statement. ``name`` is the name of the alias, ``type_params`` is a list of
    :ref:`type parameters <ast-type-params>`, and ``value`` is the value of the
-   type alias.
+   type alias. ``doc`` is the uncleaned docstring, or ``None`` if absent.
+   A string literal immediately following the alias in the same suite is
+   recorded in this field during AST preprocessing and remains a separate
+   statement in the tree.
+
+   .. versionchanged:: next
+      Added the ``doc`` field.
 
    .. doctest::
 
@@ -2356,12 +2362,15 @@ and classes for traversing abstract syntax trees:
 
    Return the docstring of the given *node* (which must be a
    :class:`FunctionDef`, :class:`AsyncFunctionDef`, :class:`ClassDef`,
-   or :class:`Module` node), or ``None`` if it has no docstring.
+   :class:`TypeAlias`, or :class:`Module` node), or ``None`` if it has no docstring.
    If *clean* is true, clean up the docstring's indentation with
    :func:`inspect.cleandoc`.
 
    .. versionchanged:: 3.5
       :class:`AsyncFunctionDef` is now supported.
+
+   .. versionchanged:: next
+      :class:`TypeAlias` is now supported.
 
 
 .. function:: get_source_segment(source, node, *, padded=False)

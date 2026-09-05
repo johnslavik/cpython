@@ -1793,8 +1793,23 @@ codegen_typealias_body(compiler *c, stmt_ty s)
     Py_DECREF(co);
     RETURN_IF_ERROR(ret);
 
-    ADDOP_I(c, loc, BUILD_TUPLE, 3);
+    ADDOP_I(c, loc, BUILD_TUPLE, 4);
     ADDOP_I(c, loc, CALL_INTRINSIC_1, INTRINSIC_TYPEALIAS);
+    return SUCCESS;
+}
+
+static int
+codegen_typealias_doc(compiler *c, stmt_ty s)
+{
+    PyObject *doc = s->v.TypeAlias.doc
+        ? _PyCompile_CleanDoc(s->v.TypeAlias.doc) : Py_NewRef(Py_None);
+    if (doc == NULL) {
+        return ERROR;
+    }
+    Py_ssize_t index = _PyCompile_AddConst(c, doc);
+    Py_DECREF(doc);
+    RETURN_IF_ERROR(index < 0 ? ERROR : SUCCESS);
+    ADDOP_I(c, LOC(s), LOAD_CONST, index);
     return SUCCESS;
 }
 
@@ -1816,10 +1831,12 @@ codegen_typealias(compiler *c, stmt_ty s)
         Py_DECREF(type_params_name);
         RETURN_IF_ERROR(ret);
         ADDOP_LOAD_CONST_IN_SCOPE(c, loc, name);
+        RETURN_IF_ERROR_IN_SCOPE(c, codegen_typealias_doc(c, s));
         RETURN_IF_ERROR_IN_SCOPE(c, codegen_type_params(c, type_params));
     }
     else {
         ADDOP_LOAD_CONST(c, loc, name);
+        RETURN_IF_ERROR(codegen_typealias_doc(c, s));
         ADDOP_LOAD_CONST(c, loc, Py_None);
     }
 

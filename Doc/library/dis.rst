@@ -1882,7 +1882,8 @@ iterations of the loop.
    |                                   | used in the :keyword:`type`       |
    |                                   | statement. The argument is a tuple|
    |                                   | of the type alias's name,         |
-   |                                   | type parameters, and value.       |
+   |                                   | docstring, type parameters,       |
+   |                                   | and value.                        |
    +-----------------------------------+-----------------------------------+
 
    .. versionadded:: 3.12

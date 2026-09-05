@@ -206,6 +206,7 @@ void _PyAST_Fini(PyInterpreterState *interp)
     Py_CLEAR(state->decorator_list);
     Py_CLEAR(state->default_value);
     Py_CLEAR(state->defaults);
+    Py_CLEAR(state->doc);
     Py_CLEAR(state->elt);
     Py_CLEAR(state->elts);
     Py_CLEAR(state->end_col_offset);
@@ -315,6 +316,7 @@ static int init_identifiers(struct ast_state *state)
     if ((state->decorator_list = PyUnicode_InternFromString("decorator_list")) == NULL) return -1;
     if ((state->default_value = PyUnicode_InternFromString("default_value")) == NULL) return -1;
     if ((state->defaults = PyUnicode_InternFromString("defaults")) == NULL) return -1;
+    if ((state->doc = PyUnicode_InternFromString("doc")) == NULL) return -1;
     if ((state->elt = PyUnicode_InternFromString("elt")) == NULL) return -1;
     if ((state->elts = PyUnicode_InternFromString("elts")) == NULL) return -1;
     if ((state->end_col_offset = PyUnicode_InternFromString("end_col_offset")) == NULL) return -1;
@@ -458,6 +460,7 @@ static const char * const TypeAlias_fields[]={
     "name",
     "type_params",
     "value",
+    "doc",
 };
 static const char * const AugAssign_fields[]={
     "target",
@@ -1448,6 +1451,21 @@ add_ast_annotations(struct ast_state *state)
         PyObject *type = state->expr_type;
         Py_INCREF(type);
         cond = PyDict_SetItemString(TypeAlias_annotations, "value", type) == 0;
+        Py_DECREF(type);
+        if (!cond) {
+            Py_DECREF(TypeAlias_annotations);
+            return 0;
+        }
+    }
+    {
+        PyObject *type = (PyObject *)&PyUnicode_Type;
+        type = _Py_union_type_or(type, Py_None);
+        cond = type != NULL;
+        if (!cond) {
+            Py_DECREF(TypeAlias_annotations);
+            return 0;
+        }
+        cond = PyDict_SetItemString(TypeAlias_annotations, "doc", type) == 0;
         Py_DECREF(type);
         if (!cond) {
             Py_DECREF(TypeAlias_annotations);
@@ -6159,7 +6177,7 @@ init_types(void *arg)
         "     | Return(expr? value)\n"
         "     | Delete(expr* targets)\n"
         "     | Assign(expr* targets, expr value, string? type_comment)\n"
-        "     | TypeAlias(expr name, type_param* type_params, expr value)\n"
+        "     | TypeAlias(expr name, type_param* type_params, expr value, string? doc)\n"
         "     | AugAssign(expr target, operator op, expr value)\n"
         "     | AnnAssign(expr target, expr annotation, expr? value, int simple)\n"
         "     | For(expr target, expr iter, stmt* body, stmt* orelse, string? type_comment)\n"
@@ -6233,9 +6251,11 @@ init_types(void *arg)
         -1)
         return -1;
     state->TypeAlias_type = make_type(state, "TypeAlias", state->stmt_type,
-                                      TypeAlias_fields, 3,
-        "TypeAlias(expr name, type_param* type_params, expr value)");
+                                      TypeAlias_fields, 4,
+        "TypeAlias(expr name, type_param* type_params, expr value, string? doc)");
     if (!state->TypeAlias_type) return -1;
+    if (PyObject_SetAttr(state->TypeAlias_type, state->doc, Py_None) == -1)
+        return -1;
     state->AugAssign_type = make_type(state, "AugAssign", state->stmt_type,
                                       AugAssign_fields, 3,
         "AugAssign(expr target, operator op, expr value)");
@@ -7227,8 +7247,8 @@ _PyAST_Assign(asdl_expr_seq * targets, expr_ty value, string type_comment, int
 
 stmt_ty
 _PyAST_TypeAlias(expr_ty name, asdl_type_param_seq * type_params, expr_ty
-                 value, int lineno, int col_offset, int end_lineno, int
-                 end_col_offset, PyArena *arena)
+                 value, string doc, int lineno, int col_offset, int end_lineno,
+                 int end_col_offset, PyArena *arena)
 {
     stmt_ty p;
     if (!name) {
@@ -7248,6 +7268,7 @@ _PyAST_TypeAlias(expr_ty name, asdl_type_param_seq * type_params, expr_ty
     p->v.TypeAlias.name = name;
     p->v.TypeAlias.type_params = type_params;
     p->v.TypeAlias.value = value;
+    p->v.TypeAlias.doc = doc;
     p->lineno = lineno;
     p->col_offset = col_offset;
     p->end_lineno = end_lineno;
@@ -9142,6 +9163,11 @@ ast2obj_stmt(struct ast_state *state, void* _o)
         value = ast2obj_expr(state, o->v.TypeAlias.value);
         if (!value) goto failed;
         if (PyObject_SetAttr(result, state->value, value) == -1)
+            goto failed;
+        Py_DECREF(value);
+        value = ast2obj_string(state, o->v.TypeAlias.doc);
+        if (!value) goto failed;
+        if (PyObject_SetAttr(result, state->doc, value) == -1)
             goto failed;
         Py_DECREF(value);
         break;
@@ -12037,6 +12063,7 @@ obj2ast_stmt(struct ast_state *state, PyObject* obj, stmt_ty* out, const char*
         expr_ty name;
         asdl_type_param_seq* type_params;
         expr_ty value;
+        string doc;
 
         if (PyObject_GetOptionalAttr(obj, state->name, &tmp) < 0) {
             return -1;
@@ -12110,8 +12137,25 @@ obj2ast_stmt(struct ast_state *state, PyObject* obj, stmt_ty* out, const char*
             if (res != 0) goto failed;
             Py_CLEAR(tmp);
         }
-        *out = _PyAST_TypeAlias(name, type_params, value, lineno, col_offset,
-                                end_lineno, end_col_offset, arena);
+        if (PyObject_GetOptionalAttr(obj, state->doc, &tmp) < 0) {
+            return -1;
+        }
+        if (tmp == NULL || tmp == Py_None) {
+            Py_CLEAR(tmp);
+            doc = NULL;
+        }
+        else {
+            int res;
+            if (_Py_EnterRecursiveCall(" while traversing 'TypeAlias' node")) {
+                goto failed;
+            }
+            res = obj2ast_string(state, tmp, &doc, "doc", arena);
+            _Py_LeaveRecursiveCall();
+            if (res != 0) goto failed;
+            Py_CLEAR(tmp);
+        }
+        *out = _PyAST_TypeAlias(name, type_params, value, doc, lineno,
+                                col_offset, end_lineno, end_col_offset, arena);
         if (*out == NULL) goto failed;
         return 0;
     }

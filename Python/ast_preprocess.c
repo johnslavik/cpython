@@ -441,7 +441,11 @@ stmt_seq_remove_item(asdl_stmt_seq *stmts, Py_ssize_t idx)
 static int
 remove_docstring(asdl_stmt_seq *stmts, Py_ssize_t idx, PyArena *ctx_)
 {
-    assert(_PyAST_GetDocString(stmts) != NULL);
+    assert(idx >= 0 && idx < asdl_seq_LEN(stmts));
+    stmt_ty st = asdl_seq_GET(stmts, idx);
+    assert(st->kind == Expr_kind);
+    assert(st->v.Expr.value->kind == Constant_kind);
+    assert(PyUnicode_Check(st->v.Expr.value->v.Constant.value));
     // In case there's just the docstring in the body, replace it with `pass`
     // keyword, so body won't be empty.
     if (asdl_seq_LEN(stmts) == 1) {
@@ -464,6 +468,68 @@ remove_docstring(asdl_stmt_seq *stmts, Py_ssize_t idx, PyArena *ctx_)
 }
 
 static int
+prevent_docstring(stmt_ty st, PyArena *ctx_)
+{
+    asdl_expr_seq *values = _Py_asdl_expr_seq_new(1, ctx_);
+    if (!values) {
+        return 0;
+    }
+    asdl_seq_SET(values, 0, st->v.Expr.value);
+    expr_ty expr = _PyAST_JoinedStr(values, st->lineno, st->col_offset,
+                                    st->end_lineno, st->end_col_offset,
+                                    ctx_);
+    if (!expr) {
+        return 0;
+    }
+    st->v.Expr.value = expr;
+    return 1;
+}
+
+static int
+is_docstring(stmt_ty st)
+{
+    return st->kind == Expr_kind &&
+        st->v.Expr.value->kind == Constant_kind &&
+        PyUnicode_CheckExact(st->v.Expr.value->v.Constant.value);
+}
+
+static int
+astfold_stmts(asdl_stmt_seq *stmts, PyArena *ctx_, _PyASTPreprocessState *state)
+{
+    for (Py_ssize_t i = 0; i < asdl_seq_LEN(stmts); i++) {
+        stmt_ty st = asdl_seq_GET(stmts, i);
+        if (st->kind == TypeAlias_kind && st->v.TypeAlias.doc == NULL &&
+                i + 1 < asdl_seq_LEN(stmts)) {
+            stmt_ty next = asdl_seq_GET(stmts, i + 1);
+            if (is_docstring(next)) {
+                st->v.TypeAlias.doc = next->v.Expr.value->v.Constant.value;
+            }
+        }
+        int follows_alias = i > 0 &&
+            ((stmt_ty)asdl_seq_GET(stmts, i - 1))->kind == TypeAlias_kind;
+        int docstring = follows_alias && is_docstring(st);
+        if (docstring && state->optimize >= 2) {
+            if (!remove_docstring(stmts, i, ctx_)) {
+                return 0;
+            }
+            if (i == asdl_seq_LEN(stmts)) {
+                break;
+            }
+            st = asdl_seq_GET(stmts, i);
+            docstring = 0;
+        }
+        CALL(astfold_stmt, stmt_ty, st);
+        /* Do not promote an additional string or a folded expression. */
+        if (follows_alias && !docstring && is_docstring(st)) {
+            if (!prevent_docstring(st, ctx_)) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static int
 astfold_body(asdl_stmt_seq *stmts, PyArena *ctx_, _PyASTPreprocessState *state)
 {
     int docstring = _PyAST_GetDocString(stmts) != NULL;
@@ -474,21 +540,11 @@ astfold_body(asdl_stmt_seq *stmts, PyArena *ctx_, _PyASTPreprocessState *state)
         }
         docstring = 0;
     }
-    CALL_SEQ(astfold_stmt, stmt, stmts);
+    CALL(astfold_stmts, asdl_seq, stmts);
     if (!docstring && _PyAST_GetDocString(stmts) != NULL) {
-        stmt_ty st = (stmt_ty)asdl_seq_GET(stmts, 0);
-        asdl_expr_seq *values = _Py_asdl_expr_seq_new(1, ctx_);
-        if (!values) {
+        if (!prevent_docstring(asdl_seq_GET(stmts, 0), ctx_)) {
             return 0;
         }
-        asdl_seq_SET(values, 0, st->v.Expr.value);
-        expr_ty expr = _PyAST_JoinedStr(values, st->lineno, st->col_offset,
-                                        st->end_lineno, st->end_col_offset,
-                                        ctx_);
-        if (!expr) {
-            return 0;
-        }
-        st->v.Expr.value = expr;
     }
     return 1;
 }
@@ -501,7 +557,7 @@ astfold_mod(mod_ty node_, PyArena *ctx_, _PyASTPreprocessState *state)
         CALL(astfold_body, asdl_seq, node_->v.Module.body);
         break;
     case Interactive_kind:
-        CALL_SEQ(astfold_stmt, stmt, node_->v.Interactive.body);
+        CALL(astfold_stmts, asdl_seq, node_->v.Interactive.body);
         break;
     case Expression_kind:
         CALL(astfold_expr, expr_ty, node_->v.Expression.body);
@@ -739,6 +795,9 @@ astfold_stmt(stmt_ty node_, PyArena *ctx_, _PyASTPreprocessState *state)
         CALL_OPT(astfold_expr, expr_ty, node_->v.AnnAssign.value);
         break;
     case TypeAlias_kind:
+        if (state->optimize >= 2) {
+            node_->v.TypeAlias.doc = NULL;
+        }
         CALL(astfold_expr, expr_ty, node_->v.TypeAlias.name);
         CALL_SEQ(astfold_type_param, type_param, node_->v.TypeAlias.type_params);
         CALL(astfold_expr, expr_ty, node_->v.TypeAlias.value);
@@ -747,60 +806,60 @@ astfold_stmt(stmt_ty node_, PyArena *ctx_, _PyASTPreprocessState *state)
         CALL(astfold_expr, expr_ty, node_->v.For.target);
         CALL(astfold_expr, expr_ty, node_->v.For.iter);
         BEFORE_LOOP_BODY(state, node_);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.For.body);
+        CALL(astfold_stmts, asdl_seq, node_->v.For.body);
         AFTER_LOOP_BODY(state);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.For.orelse);
+        CALL(astfold_stmts, asdl_seq, node_->v.For.orelse);
         break;
     }
     case AsyncFor_kind: {
         CALL(astfold_expr, expr_ty, node_->v.AsyncFor.target);
         CALL(astfold_expr, expr_ty, node_->v.AsyncFor.iter);
         BEFORE_LOOP_BODY(state, node_);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.AsyncFor.body);
+        CALL(astfold_stmts, asdl_seq, node_->v.AsyncFor.body);
         AFTER_LOOP_BODY(state);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.AsyncFor.orelse);
+        CALL(astfold_stmts, asdl_seq, node_->v.AsyncFor.orelse);
         break;
     }
     case While_kind: {
         CALL(astfold_expr, expr_ty, node_->v.While.test);
         BEFORE_LOOP_BODY(state, node_);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.While.body);
+        CALL(astfold_stmts, asdl_seq, node_->v.While.body);
         AFTER_LOOP_BODY(state);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.While.orelse);
+        CALL(astfold_stmts, asdl_seq, node_->v.While.orelse);
         break;
     }
     case If_kind:
         CALL(astfold_expr, expr_ty, node_->v.If.test);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.If.body);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.If.orelse);
+        CALL(astfold_stmts, asdl_seq, node_->v.If.body);
+        CALL(astfold_stmts, asdl_seq, node_->v.If.orelse);
         break;
     case With_kind:
         CALL_SEQ(astfold_withitem, withitem, node_->v.With.items);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.With.body);
+        CALL(astfold_stmts, asdl_seq, node_->v.With.body);
         break;
     case AsyncWith_kind:
         CALL_SEQ(astfold_withitem, withitem, node_->v.AsyncWith.items);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.AsyncWith.body);
+        CALL(astfold_stmts, asdl_seq, node_->v.AsyncWith.body);
         break;
     case Raise_kind:
         CALL_OPT(astfold_expr, expr_ty, node_->v.Raise.exc);
         CALL_OPT(astfold_expr, expr_ty, node_->v.Raise.cause);
         break;
     case Try_kind: {
-        CALL_SEQ(astfold_stmt, stmt, node_->v.Try.body);
+        CALL(astfold_stmts, asdl_seq, node_->v.Try.body);
         CALL_SEQ(astfold_excepthandler, excepthandler, node_->v.Try.handlers);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.Try.orelse);
+        CALL(astfold_stmts, asdl_seq, node_->v.Try.orelse);
         BEFORE_FINALLY(state, node_);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.Try.finalbody);
+        CALL(astfold_stmts, asdl_seq, node_->v.Try.finalbody);
         AFTER_FINALLY(state);
         break;
     }
     case TryStar_kind: {
-        CALL_SEQ(astfold_stmt, stmt, node_->v.TryStar.body);
+        CALL(astfold_stmts, asdl_seq, node_->v.TryStar.body);
         CALL_SEQ(astfold_excepthandler, excepthandler, node_->v.TryStar.handlers);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.TryStar.orelse);
+        CALL(astfold_stmts, asdl_seq, node_->v.TryStar.orelse);
         BEFORE_FINALLY(state, node_);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.TryStar.finalbody);
+        CALL(astfold_stmts, asdl_seq, node_->v.TryStar.finalbody);
         AFTER_FINALLY(state);
         break;
     }
@@ -841,7 +900,7 @@ astfold_excepthandler(excepthandler_ty node_, PyArena *ctx_, _PyASTPreprocessSta
     switch (node_->kind) {
     case ExceptHandler_kind:
         CALL_OPT(astfold_expr, expr_ty, node_->v.ExceptHandler.type);
-        CALL_SEQ(astfold_stmt, stmt, node_->v.ExceptHandler.body);
+        CALL(astfold_stmts, asdl_seq, node_->v.ExceptHandler.body);
         break;
     // No default case, so the compiler will emit a warning if new handler
     // kinds are added without being handled here
@@ -945,7 +1004,7 @@ astfold_match_case(match_case_ty node_, PyArena *ctx_, _PyASTPreprocessState *st
 {
     CALL(astfold_pattern, expr_ty, node_->pattern);
     CALL_OPT(astfold_expr, expr_ty, node_->guard);
-    CALL_SEQ(astfold_stmt, stmt, node_->body);
+    CALL(astfold_stmts, asdl_seq, node_->body);
     return 1;
 }
 
