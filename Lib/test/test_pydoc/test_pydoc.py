@@ -1498,6 +1498,116 @@ class TestDescriptions(unittest.TestCase):
         if not MISSING_C_DOCSTRINGS:
             self.assertIn(types.UnionType.__doc__.strip().splitlines()[0], doc)
 
+    def test_type_alias(self):
+        type Pair[T] = tuple[T, T]
+        """A pair of values of the same type."""
+
+        self.assertEqual(pydoc.describe(Pair), 'type alias Pair')
+        doc = pydoc.render_doc(Pair, renderer=pydoc.plaintext)
+        self.assertIn(
+            'Python Library Documentation: type alias Pair in module '
+            + __name__, doc)
+        self.assertIn('type Pair[T] = tuple[T, T]', doc)
+        self.assertNotIn('__name__', doc)
+        self.assertNotIn('__type_params__', doc)
+        self.assertNotIn(' | ', doc)
+        self.assertIn('See help(typing.TypeAliasType)', doc)
+        self.assertIn('    A pair of values of the same type.', doc)
+        self.assertIn('    Lazy value access:', doc)
+        if not MISSING_C_DOCSTRINGS:
+            self.assertIn(
+                '    __value__\n'
+                '        Lazily evaluated value of the type alias.', doc)
+
+        html = pydoc.render_doc(Pair, renderer=pydoc.HTMLDoc())
+        self.assertIn('<strong>Pair[T]</strong></a> = tuple[T, T]', html)
+        self.assertIn('A pair of values of the same type.', html)
+        if not MISSING_C_DOCSTRINGS:
+            self.assertIn('<strong>__value__</strong>', html)
+            self.assertIn('<strong>evaluate_value</strong>', html)
+        self.assertIn('type <a ', html)
+        self.assertIn('href="typing.html#TypeAliasType"', html)
+        self.assertNotIn('<strong>__name__</strong>', html)
+
+    def test_type_alias_without_docstring(self):
+        type Alias = int
+
+        doc = pydoc.render_doc(Alias, renderer=pydoc.plaintext)
+        self.assertIn('type alias Alias in module ' + __name__, doc)
+        self.assertIn('Alias = int', doc)
+        self.assertIn('    Lazy value access:', doc)
+        self.assertNotIn('class TypeAliasType', doc)
+
+    def test_type_alias_parameters(self):
+        type Alias[T: int, U: (str, bytes) = str] = tuple[T, U]
+
+        doc = pydoc.render_doc(Alias, renderer=pydoc.plaintext)
+        self.assertIn(
+            'Alias[T: int, U: (str, bytes) = str] = tuple[T, U]', doc)
+
+    def test_type_alias_source_fallback(self):
+        type Broken = (lambda: 1 / 0)()
+
+        text = pydoc.render_doc(Broken, renderer=pydoc.plaintext)
+        self.assertIn('Broken = (lambda: 1 / 0)()', text)
+
+        html = pydoc.render_doc(Broken, renderer=pydoc.HTMLDoc())
+        self.assertIn('Broken</strong></a> = (lambda: 1 / 0)()', html)
+
+    def test_type_alias_source_fallback_multiline(self):
+        type Broken[T] = (
+            (lambda: "<tag>" + str(1 / 0))()
+        )
+
+        text = pydoc.render_doc(Broken, renderer=pydoc.plaintext)
+        self.assertIn('Broken[T] = (lambda: "<tag>" + str(1 / 0))()', text)
+
+        html = pydoc.render_doc(Broken, renderer=pydoc.HTMLDoc())
+        self.assertIn('&lt;tag&gt;', html)
+        self.assertNotIn('<tag>', html)
+
+    def test_type_alias_unrenderable_value(self):
+        ns = {}
+        exec(compile('type Broken = (lambda: 1 / 0)()',
+                     '<pydoc alias without source>', 'exec'), ns)
+        broken = ns['Broken']
+
+        text = pydoc.render_doc(broken, renderer=pydoc.plaintext)
+        self.assertIn(
+            "Broken = <unable to render: ZeroDivisionError('division by zero')>",
+            text)
+
+        html = pydoc.render_doc(broken, renderer=pydoc.HTMLDoc())
+        self.assertIn(
+            'Broken</strong></a> = '
+            "&lt;unable to render: ZeroDivisionError('division by zero')&gt;",
+            html)
+
+    def test_type_alias_in_module(self):
+        type Pair[T] = tuple[T, T]
+        """A pair of values of the same type."""
+
+        module = types.ModuleType('_test_pydoc_type_aliases')
+        Pair.__module__ = module.__name__
+        module.Pair = Pair
+        module.ExportedPair = Pair
+
+        with unittest.mock.patch.dict(sys.modules, {module.__name__: module}):
+            text = pydoc.plain(pydoc.TextDoc().docmodule(module))
+            html = pydoc.HTMLDoc().docmodule(module)
+        self.assertIn('TYPE ALIASES\n', text)
+        self.assertNotIn('DATA\n', text)
+        self.assertIn('Pair[T] = tuple[T, T]', text)
+        self.assertIn(
+            'ExportedPair = type alias Pair[T] = tuple[T, T]', text)
+
+        self.assertIn('<h2>Type Aliases</h2>', html)
+        self.assertNotIn('<h2>Data</h2>', html)
+        self.assertIn('<a id="Pair"><strong>Pair[T]</strong></a>', html)
+        self.assertIn(
+            '<a id="ExportedPair"><strong>ExportedPair</strong> = '
+            'type alias Pair[T]</a>', html)
+
     def test_special_form(self):
         self.assertEqual(pydoc.describe(typing.NoReturn), '_SpecialForm')
         doc = pydoc.render_doc(typing.NoReturn, renderer=pydoc.plaintext)

@@ -71,9 +71,10 @@ import sysconfig
 import textwrap
 import time
 import tokenize
+import typing
 import urllib.parse
 import warnings
-from annotationlib import Format
+from annotationlib import Format, call_evaluate_function
 from collections import deque
 from reprlib import Repr
 from traceback import format_exception_only
@@ -196,7 +197,12 @@ def isdata(object):
     """Check if an object is of a type that probably means it's data."""
     return not (inspect.ismodule(object) or inspect.isclass(object) or
                 inspect.isroutine(object) or inspect.isframe(object) or
-                inspect.istraceback(object) or inspect.iscode(object))
+                inspect.istraceback(object) or inspect.iscode(object) or
+                istypealias(object))
+
+def istypealias(object):
+    """Check if an object is a type alias."""
+    return isinstance(object, typing.TypeAliasType)
 
 def replace(text, *pairs):
     """Do a series of global replacements on a string."""
@@ -467,6 +473,58 @@ def safeimport(path, forceload=0, cache={}):
             raise ErrorDuringImport(path, err)
     return module
 
+def _typealias_source_value(object):
+    """Recover an alias expression when string-format evaluation fails."""
+    import ast
+
+    try:
+        source = textwrap.dedent(inspect.getsource(object.evaluate_value))
+        tree = ast.parse(source)
+    except (OSError, TypeError, SyntaxError):
+        return None
+    aliases = [node for node in ast.walk(tree)
+               if isinstance(node, ast.TypeAlias)
+               and node.name.id == object.__name__]
+    if len(aliases) != 1:
+        return None
+    return ast.get_source_segment(source, aliases[0].value)
+
+
+def _typealias_declaration(object):
+    params = []
+    for param in object.__type_params__:
+        if isinstance(param, typing.TypeVarTuple):
+            prefix = '*'
+        elif isinstance(param, typing.ParamSpec):
+            prefix = '**'
+        else:
+            prefix = ''
+        declaration = prefix + param.__name__
+        for separator, attribute in (
+            (': ', 'evaluate_constraints'),
+            (': ', 'evaluate_bound'),
+            (' = ', 'evaluate_default'),
+        ):
+            evaluate = getattr(param, attribute, None)
+            if evaluate is not None:
+                try:
+                    value = call_evaluate_function(evaluate, Format.STRING)
+                except Exception:
+                    continue
+                declaration += separator + str(value)
+        params.append(declaration)
+    name = object.__name__
+    if params:
+        name += '[%s]' % ', '.join(params)
+    try:
+        value = call_evaluate_function(object.evaluate_value, Format.STRING)
+    except Exception as exc:
+        value = _typealias_source_value(object)
+        if value is None:
+            value = f'<unable to render: {exc!r}>'
+    return name, str(value)
+
+
 # ---------------------------------------------------- formatter base class
 
 class Doc:
@@ -487,6 +545,7 @@ class Doc:
             if inspect.ismodule(object): return self.docmodule(*args)
             if inspect.isclass(object): return self.docclass(*args)
             if inspect.isroutine(object): return self.docroutine(*args)
+            if istypealias(object): return self.doctypealias(*args)
         except AttributeError:
             pass
         if inspect.isdatadescriptor(object): return self.docdata(*args)
@@ -498,7 +557,7 @@ class Doc:
             name and ' ' + repr(name), type(object).__name__)
         raise TypeError(message)
 
-    docmodule = docclass = docroutine = docother = docproperty = docdata = fail
+    docmodule = docclass = docroutine = doctypealias = docother = docproperty = docdata = fail
 
     def getdocloc(self, object, basedir=None):
         """Return the location of module docs or None"""
@@ -844,6 +903,14 @@ class HTMLDoc(Doc):
                     funcs.append((key, value))
                     fdict[key] = '#-' + key
                     if inspect.isfunction(value): fdict[value] = fdict[key]
+        typealiases = []
+        for key, value in inspect.getmembers(
+                object, istypealias):
+            if (all is not None or
+                (inspect.getmodule(value) or object) is object):
+                if visiblename(key, all, object):
+                    typealiases.append((key, value))
+                    cdict[key] = cdict[value] = '#' + key
         data = []
         for key, value in inspect.getmembers(object, isdata):
             if visiblename(key, all, object):
@@ -875,6 +942,12 @@ class HTMLDoc(Doc):
                 contents.append(self.document(value, key, name, fdict, cdict))
             result = result + self.bigsection(
                 'Classes', 'index', ' '.join(contents))
+        if typealiases:
+            contents = []
+            for key, value in typealiases:
+                contents.append(self.document(value, key, name, fdict, cdict))
+            result = result + self.bigsection(
+                'Type Aliases', 'type-aliases', ' '.join(contents))
         if funcs:
             contents = []
             for key, value in funcs:
@@ -1162,6 +1235,35 @@ class HTMLDoc(Doc):
             doc = doc and '<dd class="docstring">%s</dd>' % doc
             return '<dl class="doc"><dt>%s</dt>%s</dl>\n' % (decl, doc)
 
+    def doctypealias(self, object, name=None, mod=None, funcs={}, classes={},
+                     *ignored):
+        """Produce HTML documentation for a type alias."""
+        realname, value = _typealias_declaration(object)
+        name = name or object.__name__
+        if name == object.__name__:
+            declaration = '<strong>%s</strong>' % self.escape(realname)
+        else:
+            declaration = '<strong>%s</strong> = type alias %s' % (
+                self.escape(name), self.escape(realname))
+        title = 'type <a id="%s">%s</a> = %s' % (
+            self.escape(name), declaration, self.escape(value))
+        contents = ['<h4>Lazy value access:</h4>\n']
+        for attr in ('__value__', 'evaluate_value'):
+            member = vars(typing.TypeAliasType)[attr]
+            if (not inspect.isdatadescriptor(member) or
+                    not (description := inspect.getdoc(member))):
+                continue
+            contents.append(
+                '<dl class="doc"><dt><strong>%s</strong></dt>'
+                '<dd class="docstring">%s</dd></dl>\n' %
+                (attr, description))
+        contents.append(
+            '<p>See <a href="typing.html#TypeAliasType">'
+            'typing.TypeAliasType</a> for the full type alias interface.</p>\n')
+        doc = self.markup(
+            getdoc(object), self.preformat, funcs, classes)
+        return self.section(title, 'title', ''.join(contents), prelude=doc)
+
     def docdata(self, object, name=None, mod=None, cl=None, *ignored):
         """Produce html documentation for a data descriptor."""
         results = []
@@ -1319,6 +1421,13 @@ location listed above.
                 or (inspect.getmodule(value) or object) is object):
                 if visiblename(key, all, object):
                     funcs.append((key, value))
+        typealiases = []
+        for key, value in inspect.getmembers(
+                object, istypealias):
+            if (all is not None or
+                (inspect.getmodule(value) or object) is object):
+                if visiblename(key, all, object):
+                    typealiases.append((key, value))
         data = []
         for key, value in inspect.getmembers(object, isdata):
             if visiblename(key, all, object):
@@ -1355,6 +1464,13 @@ location listed above.
             for key, value in classes:
                 contents.append(self.document(value, key, name))
             result = result + self.section('CLASSES', '\n'.join(contents))
+
+        if typealiases:
+            contents = []
+            for key, value in typealiases:
+                contents.append(self.document(value, key, name))
+            result = result + self.section(
+                'TYPE ALIASES', '\n'.join(contents))
 
         if funcs:
             contents = []
@@ -1536,6 +1652,29 @@ location listed above.
             return title + '\n'
         return title + '\n' + self.indent(contents.rstrip(), ' |  ') + '\n'
 
+    def doctypealias(self, object, name=None, mod=None, *ignored):
+        """Produce text documentation for a type alias."""
+        realname, value = _typealias_declaration(object)
+        name = name or object.__name__
+        contents = []
+        if doc := getdoc(object):
+            contents.extend((self._format_doc(doc), ''))
+        contents.extend(('Lazy value access:', ''))
+        for attr in ('__value__', 'evaluate_value'):
+            member = vars(typing.TypeAliasType)[attr]
+            if (not inspect.isdatadescriptor(member) or
+                    not (description := inspect.getdoc(member))):
+                continue
+            contents.extend((self.bold(attr), self.indent(description), ''))
+        contents.append(
+            'See help(typing.TypeAliasType) for the full type alias interface.')
+        if name == object.__name__:
+            title = self.bold(realname)
+        else:
+            title = self.bold(name) + ' = type alias ' + realname
+        title = 'type ' + title + ' = ' + value
+        return title + '\n' + self.indent('\n'.join(contents).rstrip()) + '\n'
+
     def formatvalue(self, object):
         """Format an argument default value as text."""
         return '=' + self.repr(object)
@@ -1693,6 +1832,8 @@ def describe(thing):
             return 'method descriptor ' + thing.__name__
         except AttributeError:
             pass
+    if istypealias(thing):
+        return 'type alias ' + thing.__name__
     return type(thing).__name__
 
 def locate(path, forceload=0):
@@ -1751,6 +1892,7 @@ def render_doc(thing, title='Python Library Documentation: %s', forceload=0,
               inspect.isclass(object) or
               inspect.isroutine(object) or
               inspect.isdatadescriptor(object) or
+              istypealias(object) or
               _getdoc(object)):
         # If the passed object is a piece of data or an instance,
         # document its available methods instead of its value.
