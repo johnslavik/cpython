@@ -1,0 +1,3 @@
+Fix a reference cycle in :mod:`asyncio` that prevented
+:exc:`ResourceWarning` for unclosed selector event loops.
+Patch by Bartosz Sławecki.

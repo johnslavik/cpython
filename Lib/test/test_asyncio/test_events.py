@@ -2049,6 +2049,12 @@ class EventLoopTestsMixin:
             it = self.loop.run_in_executor(None, func).__await__()
             next(it)
 
+    def test_unclosed_event_loop(self):
+        loop = self.create_event_loop()
+        with self.assertWarnsRegex(ResourceWarning, r"unclosed event loop"):
+            loop.__del__()
+        self.assertTrue(loop.is_closed())
+
 
 class SubprocessTestsMixin:
 

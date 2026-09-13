@@ -109,11 +109,16 @@ class BaseSelectorEventLoop(base_events.BaseEventLoop):
             self._selector = None
 
     def _close_self_pipe(self):
-        self._remove_reader(self._ssock.fileno())
-        self._ssock.close()
-        self._ssock = None
-        self._csock.close()
-        self._csock = None
+        if self._ssock is not None:
+            try:
+                self._selector.unregister(self._ssock.fileno())
+            except Exception:
+                pass
+            self._ssock.close()
+            self._ssock = None
+        if self._csock is not None:
+            self._csock.close()
+            self._csock = None
         self._internal_fds -= 1
 
     def _make_self_pipe(self):
@@ -122,7 +127,7 @@ class BaseSelectorEventLoop(base_events.BaseEventLoop):
         self._ssock.setblocking(False)
         self._csock.setblocking(False)
         self._internal_fds += 1
-        self._add_reader(self._ssock.fileno(), self._read_from_self)
+        self._selector.register(self._ssock.fileno(), selectors.EVENT_READ, (None, None))
 
     def _process_self_data(self, data):
         pass
@@ -752,6 +757,10 @@ class BaseSelectorEventLoop(base_events.BaseEventLoop):
     def _process_events(self, event_list):
         for key, mask in event_list:
             fileobj, (reader, writer) = key.fileobj, key.data
+            if reader is None and writer is None:  # self-pipe sentinel
+                if mask & selectors.EVENT_READ:
+                    self._add_callback(events.Handle(self._read_from_self, (), self))
+                continue
             if mask & selectors.EVENT_READ and reader is not None:
                 if reader._cancelled:
                     self._remove_reader(fileobj)
