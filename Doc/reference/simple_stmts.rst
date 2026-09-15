@@ -1165,6 +1165,18 @@ This allows the type alias to refer to names that are not yet defined.
 Type aliases may be made generic by adding a :ref:`type parameter list <type-params>`
 after the name. See :ref:`generic-type-aliases` for more.
 
+If the next logical line in the same suite is an expression statement
+consisting of a string literal, that string is the type alias's
+:term:`docstring`, available as its ``__doc__`` attribute. The same forms
+are accepted as for function and class docstrings. The docstring is part of
+the :keyword:`!type` statement rather than a separate statement::
+
+   type Point = tuple[float, float]
+   """A point in the plane."""
+
+.. versionchanged:: next
+   Type aliases can have docstrings.
+
 :keyword:`!type` is a :ref:`soft keyword <soft-keywords>`.
 
 .. versionadded:: 3.12

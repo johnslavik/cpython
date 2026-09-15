@@ -678,9 +678,13 @@ keyword_pattern[KeyPatternPair*]:
 # ---------------
 
 type_alias[stmt_ty]:
-    | "type" n=NAME t=[type_params] '=' b=expression {
+    | "type" n=NAME t=[type_params] '=' b=expression doc[expr_ty]=[NEWLINE d=type_alias_docstring { d }] {
         CHECK_VERSION(stmt_ty, 12, "Type statement is",
-        _PyAST_TypeAlias(CHECK(expr_ty, _PyPegen_set_expr_context(p, n, Store)), t, b, EXTRA)) }
+        _PyAST_TypeAlias(CHECK(expr_ty, _PyPegen_set_expr_context(p, n, Store)), t, b,
+                        doc ? doc->v.Constant.value : NULL, EXTRA)) }
+
+type_alias_docstring[expr_ty]:
+    | e=star_expressions { _PyPegen_docstring_from_constant(p, e) }
 
 # Type parameter declaration
 # --------------------------

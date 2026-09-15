@@ -243,6 +243,7 @@ struct _stmt {
             expr_ty name;
             asdl_type_param_seq *type_params;
             expr_ty value;
+            string doc;
         } TypeAlias;
 
         struct {
@@ -723,8 +724,8 @@ stmt_ty _PyAST_Assign(asdl_expr_seq * targets, expr_ty value, string
                       type_comment, int lineno, int col_offset, int end_lineno,
                       int end_col_offset, PyArena *arena);
 stmt_ty _PyAST_TypeAlias(expr_ty name, asdl_type_param_seq * type_params,
-                         expr_ty value, int lineno, int col_offset, int
-                         end_lineno, int end_col_offset, PyArena *arena);
+                         expr_ty value, string doc, int lineno, int col_offset,
+                         int end_lineno, int end_col_offset, PyArena *arena);
 stmt_ty _PyAST_AugAssign(expr_ty target, operator_ty op, expr_ty value, int
                          lineno, int col_offset, int end_lineno, int
                          end_col_offset, PyArena *arena);

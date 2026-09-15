@@ -1,7 +1,10 @@
+import ast
 import pickle
 import types
 import unittest
-from test.support import check_syntax_error, run_code
+import weakref
+from test.support import check_syntax_error, gc_collect, run_code
+from test.support import os_helper, script_helper
 from test.typinganndata import mod_generics_cache
 
 from typing import (
@@ -9,6 +12,8 @@ from typing import (
 )
 
 type GlobalTypeAlias = int
+type DocumentedGlobalTypeAlias = int
+"""A module-scoped alias."""
 
 def get_type_alias():
     type TypeAliasInFunc = str
@@ -181,6 +186,449 @@ class TypeParamsAliasValueTest(unittest.TestCase):
         ):
             setattr(TypeAliasLocal, '__qualname__', 'TA')
 
+    def test___doc__(self):
+        type Undocumented = int
+        type Documented[T] = list[T]
+        """A documented generic type alias."""
+
+        self.assertIsNone(Undocumented.__doc__)
+        self.assertEqual(Documented.__doc__,
+                         "A documented generic type alias.")
+        self.assertEqual(DocumentedGlobalTypeAlias.__doc__,
+                         "A module-scoped alias.")
+
+    def test_docstring_scopes(self):
+        class Container:
+            type Alias = int
+            """A class-scoped alias."""
+
+        def make_alias():
+            type Alias = str
+            """A function-scoped alias.
+
+            More details.
+            """
+            return Alias
+
+        self.assertEqual(Container.Alias.__doc__,
+                         "A class-scoped alias.")
+        self.assertEqual(make_alias().__doc__,
+                         "A function-scoped alias.\n\nMore details.\n")
+
+    def test_docstring_nested_suites(self):
+        docs = []
+
+        if True:
+            type InIf = int
+            """In an if body."""
+            docs.append(InIf.__doc__)
+        if False:
+            pass
+        else:
+            type InElse = int
+            """In an else body."""
+            docs.append(InElse.__doc__)
+
+        for _ in (None,):
+            type InFor = int
+            """In a for body."""
+            docs.append(InFor.__doc__)
+        else:
+            type InForElse = int
+            """In a for else body."""
+            docs.append(InForElse.__doc__)
+
+        while True:
+            type InWhile = int
+            """In a while body."""
+            docs.append(InWhile.__doc__)
+            break
+        while False:
+            pass
+        else:
+            type InWhileElse = int
+            """In a while else body."""
+            docs.append(InWhileElse.__doc__)
+
+        with self.subTest(suite="with"):
+            type InWith = int
+            """In a with body."""
+            docs.append(InWith.__doc__)
+
+        try:
+            type InTry = int
+            """In a try body."""
+            docs.append(InTry.__doc__)
+        except Exception:
+            self.fail("unexpected exception")
+        else:
+            type InTryElse = int
+            """In a try else body."""
+            docs.append(InTryElse.__doc__)
+        finally:
+            type InFinally = int
+            """In a finally body."""
+            docs.append(InFinally.__doc__)
+
+        try:
+            raise ValueError
+        except ValueError:
+            type InExcept = int
+            """In an except body."""
+            docs.append(InExcept.__doc__)
+
+        try:
+            raise ExceptionGroup("test", [ValueError()])
+        except* ValueError:
+            type InExceptStar = int
+            """In an except-star body."""
+            docs.append(InExceptStar.__doc__)
+
+        match None:
+            case None:
+                type InMatch = int
+                """In a match case."""
+                docs.append(InMatch.__doc__)
+
+        self.assertEqual(docs, [
+            "In an if body.",
+            "In an else body.",
+            "In a for body.",
+            "In a for else body.",
+            "In a while body.",
+            "In a while else body.",
+            "In a with body.",
+            "In a try body.",
+            "In a try else body.",
+            "In a finally body.",
+            "In an except body.",
+            "In an except-star body.",
+            "In a match case.",
+        ])
+
+    def test_docstring_async_suites(self):
+        class AsyncIterator:
+            def __init__(self):
+                self.done = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.done:
+                    raise StopAsyncIteration
+                self.done = True
+                return None
+
+        class AsyncContextManager:
+            async def __aenter__(self):
+                return None
+
+            async def __aexit__(self, *exc_info):
+                pass
+
+        async def nested():
+            docs = []
+            async for _ in AsyncIterator():
+                type InAsyncFor = int
+                """In an async for body."""
+                docs.append(InAsyncFor.__doc__)
+            else:
+                type InAsyncForElse = int
+                """In an async for else body."""
+                docs.append(InAsyncForElse.__doc__)
+
+            async with AsyncContextManager():
+                type InAsyncWith = int
+                """In an async with body."""
+                docs.append(InAsyncWith.__doc__)
+            return docs
+
+        with self.assertRaises(StopIteration) as caught:
+            nested().send(None)
+        self.assertEqual(caught.exception.value, [
+            "In an async for body.",
+            "In an async for else body.",
+            "In an async with body.",
+        ])
+
+    def test_docstring_attachment(self):
+        type First = int
+        """The first alias."""
+        type Second = str
+        """The second alias."""
+        type NonString = bytes
+        42
+        type InterveningStatement = float
+        marker = None
+        """Not an alias docstring."""
+
+        self.assertEqual(First.__doc__, "The first alias.")
+        self.assertEqual(Second.__doc__, "The second alias.")
+        self.assertIsNone(NonString.__doc__)
+        self.assertIsNone(InterveningStatement.__doc__)
+        self.assertIsNone(marker)
+
+    def test_docstring_forms_match_function_docstrings(self):
+        # Whatever qualifies as a function docstring also qualifies as a
+        # type alias docstring, and vice versa.
+        forms = (
+            '"plain"',
+            "'single quotes'",
+            '"""triple\n    quotes"""',
+            '"adjacent " "literals"',
+            '("parenthesized")',
+            '("multi-line "\n     "parenthesized")',
+            'u"legacy prefix"',
+            'b"bytes"',
+            'f"f-string"',
+            't"t-string"',
+            '"implicit " f"concatenation"',
+            '"folded " + "expression"',
+            '"repeated" * 2',
+            '"tuple",',
+            '("tuple", "of strings")',
+            '42',
+            '...',
+        )
+        for form in forms:
+            with self.subTest(form=form):
+                ns = {}
+                exec(f'def f():\n    {form}\n', ns)
+                function_doc = ns["f"].__doc__
+                ns = {}
+                exec(f'type Alias = int\n{form}\n', ns)
+                self.assertEqual(ns["Alias"].__doc__, function_doc)
+
+    def test_parenthesized_docstring(self):
+        # Parentheses around the string do not matter, as for functions.
+        source = ('type Alias = int\n'
+                  '("A parenthesized "\n'
+                  ' "docstring.")\n'
+                  '"additional"\n')
+        for optimize in (0, 1, 2):
+            with self.subTest(optimize=optimize):
+                tree = ast.parse(source, optimize=optimize)
+                alias, additional = tree.body
+                doc = "A parenthesized docstring." if optimize < 2 else None
+                self.assertEqual(alias.doc, doc)
+                self.assertEqual(ast.get_docstring(alias), doc)
+                self.assertEqual(additional.value.value, "additional")
+                ns = {}
+                exec(compile(tree, "<ast>", "exec"), ns)
+                self.assertEqual(ns["Alias"].__doc__, doc)
+                if optimize < 2:
+                    reparsed = ast.parse(ast.unparse(tree))
+                    self.assertEqual(reparsed.body[0].doc, doc)
+                    self.assertEqual(len(reparsed.body), 2)
+
+    def test_docstring_semicolon(self):
+        ns = {}
+        exec('type Alias = int; "not a docstring"\n', ns)
+        self.assertIsNone(ns["Alias"].__doc__)
+        ns = {}
+        exec('type Alias = int\n"docstring"; marker = True\n', ns)
+        self.assertEqual(ns["Alias"].__doc__, "docstring")
+        self.assertTrue(ns["marker"])
+
+    def test_docstring_node_positions(self):
+        source = ('type Alias = int\n'
+                  '\n'
+                  '# A comment.\n'
+                  '("A parenthesized "\n'
+                  ' "docstring.")\n'
+                  'marker = True\n')
+        tree = ast.parse(source)
+        alias, marker = tree.body
+        self.assertEqual(alias.doc, "A parenthesized docstring.")
+        self.assertEqual((alias.lineno, alias.col_offset), (1, 0))
+        self.assertEqual((alias.end_lineno, alias.end_col_offset), (5, 14))
+        self.assertEqual(ast.get_source_segment(source, alias),
+                         source[:source.index("\nmarker")])
+        self.assertEqual(marker.lineno, 6)
+
+        tree = ast.parse('type Alias = int\nmarker = True\n')
+        alias = tree.body[0]
+        self.assertIsNone(alias.doc)
+        self.assertEqual((alias.end_lineno, alias.end_col_offset), (1, 16))
+
+    def test_docstring_optimization(self):
+        code = compile(
+            'type First = int\n'
+            '"""The first alias."""\n'
+            'type Second[T] = list[T]\n'
+            '"""The second alias."""\n'
+            'if True:\n'
+            '    type Nested = bytes\n'
+            '    """The nested alias."""\n'
+            'marker = True\n',
+            "<test>", "exec", optimize=2,
+        )
+        ns = {}
+        exec(code, ns)
+
+        self.assertIsNone(ns["First"].__doc__)
+        self.assertIsNone(ns["Second"].__doc__)
+        self.assertIsNone(ns["Nested"].__doc__)
+        self.assertIs(ns["marker"], True)
+
+    def test_additional_docstrings_and_folded_expressions(self):
+        expressions = (
+            ('"primary"\n"additional"', "primary"),
+            ('"primary"\n"additional"\n"third"', "primary"),
+            ('"adjacent " "literals"', "adjacent literals"),
+            ('("parenthesized")', "parenthesized"),
+            ('("multi-line "\n "parenthesized")', "multi-line parenthesized"),
+            ("u'legacy prefix'", "legacy prefix"),
+            ('"not " + "documentation"', None),
+            ('"not documentation" * 2', None),
+            ('f"not documentation"', None),
+            ('t"not documentation"', None),
+            ('b"not documentation"', None),
+            ('"not documentation",', None),
+            ('("not", "documentation")', None),
+        )
+        for expression, doc in expressions:
+            for optimize in (0, 1, 2):
+                for nested in (False, True):
+                    with self.subTest(expression=expression,
+                                      optimize=optimize, nested=nested):
+                        source = "type Alias = int\n" + expression + "\n"
+                        if nested:
+                            source = "if True:\n" + "".join(
+                                "    " + line + "\n"
+                                for line in source.splitlines()
+                            )
+                        source += 'type Next = str\n"next doc"\nmarker = True\n'
+                        ns = {}
+                        exec(compile(source, "<test>", "exec",
+                                     optimize=optimize), ns)
+                        self.assertEqual(ns["Alias"].__doc__,
+                                         doc if optimize < 2 else None)
+                        self.assertEqual(ns["Next"].__doc__,
+                                         "next doc" if optimize < 2 else None)
+                        self.assertTrue(ns["marker"])
+
+    def test_docstring_stripped_from_ast(self):
+        source = 'type Alias = int\n"primary"\n"additional"\n'
+        tree = compile(source, "<test>", "exec", ast.PyCF_ONLY_AST,
+                       optimize=2)
+        self.assertFalse(any(
+            isinstance(node, ast.Constant) and node.value == "primary"
+            for node in ast.walk(tree)
+        ))
+        self.assertIsNone(tree.body[0].doc)
+        self.assertIsNone(ast.get_docstring(tree.body[0]))
+        # The additional docstring stays an ordinary expression statement.
+        self.assertEqual(len(tree.body), 2)
+        self.assertEqual(tree.body[1].value.value, "additional")
+        ns = {}
+        # Recompiling the stripped tree must not promote the additional string.
+        exec(compile(tree, "<test>", "exec", optimize=0), ns)
+        self.assertIsNone(ns["Alias"].__doc__)
+
+    def test_docstring_from_file(self):
+        source = (
+            'type Alias[T] = list[T]\n'
+            '"""A type alias.\n\n    More details.\n"""\n'
+            'print(repr(Alias.__doc__))\n'
+        )
+        with os_helper.temp_dir() as temp_dir:
+            script = script_helper.make_script(
+                temp_dir, "type_alias_doc", source,
+            )
+            _, stdout, _ = script_helper.assert_python_ok(script)
+            self.assertEqual(
+                stdout, b"'A type alias.\\n\\nMore details.\\n'\n",
+            )
+
+            _, stdout, _ = script_helper.assert_python_ok("-OO", script)
+            self.assertEqual(stdout, b"None\n")
+
+    def test_docstring_ast_round_trip(self):
+        tree = ast.parse(
+            'type Alias[T] = list[T]\n'
+            '"""A type alias.\n\n    More details.\n"""\n'
+        )
+        alias = tree.body[0]
+        self.assertEqual(alias._fields, ("name", "type_params", "value", "doc"))
+        # The docstring is part of the type statement, not a sibling node.
+        self.assertEqual(len(tree.body), 1)
+        self.assertEqual(alias.doc, "A type alias.\n\n    More details.\n")
+        self.assertEqual(alias.end_lineno, 5)
+        self.assertEqual(ast.get_docstring(alias, clean=False), alias.doc)
+        self.assertEqual(ast.get_docstring(alias),
+                         "A type alias.\n\nMore details.")
+        self.assertEqual(ast.dump(tree).count("A type alias."), 1)
+        self.assertEqual(repr(tree).count("A type alias."), 1)
+        self.assertTrue(ast.compare(tree, ast.parse(ast.unparse(tree))))
+
+        doc = "A type alias.\n\nMore details.\n"
+        levels = ((0, doc), (1, doc), (2, None))
+        for optimize, expected in levels:
+            with self.subTest(optimize=optimize):
+                ns = {}
+                code = compile(tree, "<ast>", "exec", optimize=optimize)
+                exec(code, ns)
+                self.assertEqual(ns["Alias"].__doc__, expected)
+
+    def test_docstring_ast_field(self):
+        for doc in (None, "", "  Updated documentation."):
+            with self.subTest(doc=doc):
+                alias = ast.TypeAlias(
+                    ast.Name(id="Alias", ctx=ast.Store()), [],
+                    ast.Name(id="int", ctx=ast.Load()),
+                )
+                self.assertIsNone(alias.doc)
+                alias.doc = doc
+                tree = ast.fix_missing_locations(ast.Module(body=[alias],
+                                                           type_ignores=[]))
+                self.assertEqual(ast.get_docstring(alias, clean=False), doc)
+                reparsed = ast.parse(ast.unparse(tree))
+                self.assertEqual(len(reparsed.body), 1)
+                self.assertEqual(reparsed.body[0].doc, doc)
+                ns = {}
+                exec(compile(tree, "<ast>", "exec"), ns)
+                self.assertEqual(ns["Alias"].__doc__,
+                                 None if doc is None else doc.lstrip())
+
+    def test_unparse_emits_docstring_field(self):
+        tree = ast.parse('type Alias = int\n"Original."\n"additional"')
+        tree.body[0].doc = "From the field."
+        source = ast.unparse(tree)
+        self.assertNotIn("Original.", source)
+        self.assertIn("From the field.", source)
+        reparsed = ast.parse(source)
+        self.assertEqual(reparsed.body[0].doc, "From the field.")
+        self.assertEqual(len(reparsed.body), 2)
+
+        # Without a docstring, the source no longer records that one was
+        # removed, so parsing it again promotes the additional docstring.
+        tree.body[0].doc = None
+        reparsed = ast.parse(ast.unparse(tree))
+        self.assertEqual(reparsed.body[0].doc, "additional")
+        self.assertEqual(len(reparsed.body), 1)
+
+    def test_docstring_nested_suite_ast(self):
+        source = ('if True:\n'
+                  '    type Alias = int\n'
+                  '    # Documentation may follow comments and blank lines.\n'
+                  '\n'
+                  '    "primary"\n'
+                  '    "additional"\n')
+        for optimize in (0, 1, 2):
+            with self.subTest(optimize=optimize):
+                tree = ast.parse(source, optimize=optimize)
+                alias = tree.body[0].body[0]
+                self.assertEqual(alias.doc, "primary" if optimize < 2 else None)
+                reparsed = ast.parse(ast.unparse(tree))
+                self.assertEqual(reparsed.body[0].body[0].doc,
+                                 "primary" if optimize < 2 else "additional")
+                # Recompiling the AST must not attach the additional string.
+                ns = {}
+                exec(compile(tree, "<ast>", "exec"), ns)
+                self.assertEqual(ns["Alias"].__doc__, alias.doc)
+
     def test_repr(self):
         type Simple = int
         self.assertEqual(repr(Simple), Simple.__qualname__)
@@ -231,6 +679,16 @@ class TypeParamsAliasValueTest(unittest.TestCase):
 
 
 class TypeAliasConstructorTest(unittest.TestCase):
+    def test_doc(self):
+        for doc in (None, "", "Alias documentation.", "\n  Unchanged indentation.\n"):
+            with self.subTest(doc=doc):
+                alias = TypeAliasType("Alias", int, doc=doc)
+                self.assertEqual(alias.__doc__, doc)
+                alias.__doc__ = "Updated documentation."
+                self.assertEqual(alias.__doc__, "Updated documentation.")
+                del alias.__doc__
+                self.assertIsNone(alias.__doc__)
+
     def test_basic(self):
         TA = TypeAliasType("TA", int)
         self.assertEqual(TA.__name__, "TA")
@@ -238,6 +696,7 @@ class TypeAliasConstructorTest(unittest.TestCase):
         self.assertIs(TA.__value__, int)
         self.assertEqual(TA.__type_params__, ())
         self.assertEqual(TA.__module__, __name__)
+        self.assertIsNone(TA.__doc__)
 
     def test_with_qualname(self):
         TA = TypeAliasType("TA", str, qualname="Class.TA")
@@ -324,6 +783,7 @@ class TypeAliasConstructorTest(unittest.TestCase):
         TA = TypeAliasType(name="TA", value=int, type_params=(), qualname=None)
         self.assertEqual(TA.__name__, "TA")
         self.assertEqual(TA.__qualname__, "TA")
+        self.assertIsNone(TA.__doc__)
         self.assertIs(TA.__value__, int)
         self.assertEqual(TA.__type_params__, ())
         self.assertEqual(TA.__module__, __name__)
@@ -374,6 +834,28 @@ class TypeAliasTypeTest(unittest.TestCase):
                          mod_generics_cache.__name__)
         Alias.__module__ = "ham.spam.eggs"
         self.assertEqual(Alias.__module__, "ham.spam.eggs")
+
+    def test_doc(self):
+        type Alias = int
+        """Original documentation."""
+
+        self.assertEqual(Alias.__doc__, "Original documentation.")
+        Alias.__doc__ = "Updated documentation."
+        self.assertEqual(Alias.__doc__, "Updated documentation.")
+        del Alias.__doc__
+        self.assertIsNone(Alias.__doc__)
+
+    def test_doc_cycle(self):
+        class Doc(str):
+            pass
+
+        doc = Doc("Type alias documentation.")
+        alias = TypeAliasType("Alias", int, doc=doc)
+        doc.alias = alias
+        ref = weakref.ref(doc)
+        del alias, doc
+        gc_collect()
+        self.assertIsNone(ref())
 
     def test_unpack(self):
         type Alias = tuple[int, int]

@@ -2315,9 +2315,13 @@ without the dedicated syntax, as documented below.
    .. versionadded:: 3.10
 
 
-.. class:: TypeAliasType(name, value, *, type_params=(), qualname=None)
+.. class:: TypeAliasType(name, value, *, type_params=(), qualname=None, doc=None)
 
    The type of type aliases created through the :keyword:`type` statement.
+
+   The optional *doc* argument initializes the alias's ``__doc__`` attribute
+   without whitespace processing. This attribute can also be assigned after
+   creation; deleting it resets it to ``None``.
 
    Example:
 
@@ -2328,6 +2332,9 @@ without the dedicated syntax, as documented below.
       <class 'typing.TypeAliasType'>
 
    .. versionadded:: 3.12
+
+   .. versionchanged:: next
+      Added the *doc* parameter.
 
    .. attribute:: __name__
 

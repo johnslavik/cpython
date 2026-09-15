@@ -974,6 +974,39 @@ class TestSpecifics(unittest.TestCase):
                 self.assertIsNone(ns['multiple_const_strings'].__doc__)
 
     @support.cpython_only
+    def test_docstring_parenthesized(self):
+        # A docstring is an expression statement whose value is a string
+        # constant, so parentheses around the string make no difference.
+        # The same rule applies to every kind of object with a docstring.
+        forms = (
+            ('("docstring")', "docstring"),
+            ('(("docstring"))', "docstring"),
+            ('("doc" "string")', "docstring"),
+            ('("doc"\n        "string")', "docstring"),
+            ('("not", "docstring")', None),
+            ('(f"not docstring")', None),
+            ('("not " + "docstring")', None),
+        )
+        templates = (
+            ("module", "{}\n", lambda ns: ns.get("__doc__")),
+            ("class", "class C:\n    {}\n", lambda ns: ns["C"].__doc__),
+            ("function", "def f():\n    {}\n", lambda ns: ns["f"].__doc__),
+            ("coroutine", "async def f():\n    {}\n",
+             lambda ns: ns["f"].__doc__),
+            ("type alias", "type A = int\n{}\n", lambda ns: ns["A"].__doc__),
+        )
+        for kind, template, get_doc in templates:
+            for form, doc in forms:
+                for opt in [0, 1, 2]:
+                    with self.subTest(kind=kind, form=form, opt=opt):
+                        code = compile(template.format(form), "<test>",
+                                       "exec", optimize=opt)
+                        ns = {}
+                        exec(code, ns)
+                        self.assertEqual(get_doc(ns),
+                                         doc if opt < 2 else None)
+
+    @support.cpython_only
     def test_docstring_interactive_mode(self):
         srcs = [
             """def with_docstring():

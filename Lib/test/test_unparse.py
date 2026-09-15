@@ -693,6 +693,16 @@ class UnparseTestCase(ASTTestCase):
 
             self.check_src_roundtrip(src, out, mode='single')
 
+    def test_type_alias_docstring(self):
+        self.check_ast_roundtrip('type Alias = int\n"""docstring"""')
+        self.check_ast_roundtrip(
+            'type Alias[T] = list[T]\n"""docstring"""\n"additional"'
+        )
+        self.check_ast_roundtrip(
+            'if True:\n    type Alias = int\n    """docstring"""'
+        )
+        self.check_ast_roundtrip('type Alias = int\n""""""')
+
 
 class CosmeticTestCase(ASTTestCase):
     """Test if there are cosmetic issues caused by unnecessary additions"""

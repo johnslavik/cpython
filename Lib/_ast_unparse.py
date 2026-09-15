@@ -469,6 +469,8 @@ class Unparser(NodeVisitor):
         self._type_params_helper(node.type_params)
         self.write(" = ")
         self.traverse(node.value)
+        if node.doc is not None:
+            self._write_docstring(Constant(node.doc))
 
     def visit_For(self, node):
         self._for_helper("for ", node)

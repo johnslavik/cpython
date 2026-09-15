@@ -189,6 +189,7 @@ struct ast_state {
     PyObject *decorator_list;
     PyObject *default_value;
     PyObject *defaults;
+    PyObject *doc;
     PyObject *elt;
     PyObject *elts;
     PyObject *end_col_offset;

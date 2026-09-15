@@ -946,6 +946,18 @@ _PyPegen_check_barry_as_flufl(Parser *p, Token* t) {
     return 0;
 }
 
+/* Returns e if it is a string constant that can serve as a docstring,
+   otherwise NULL without setting an exception, so that the grammar
+   alternative using it fails and the parser backtracks. */
+expr_ty
+_PyPegen_docstring_from_constant(Parser *p, expr_ty e)
+{
+    if (e->kind == Constant_kind && PyUnicode_CheckExact(e->v.Constant.value)) {
+        return e;
+    }
+    return NULL;
+}
+
 int
 _PyPegen_check_legacy_stmt(Parser *p, expr_ty name) {
     if (name->kind != Name_kind) {
