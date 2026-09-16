@@ -3898,6 +3898,31 @@ _PyImport_ResolveName(PyThreadState *tstate, PyObject *name,
   return resolve_name(tstate, name, globals, level);
 }
 
+int
+_PyImport_DiscardLazyModule(PyThreadState *tstate, PyObject *name,
+                          PyObject *attr)
+{
+    PyObject *lazy_modules = LAZY_MODULES(tstate->interp);
+    if (lazy_modules == NULL) {
+        return 0;
+    }
+    if (PySet_Discard(lazy_modules, name) < 0) {
+        return -1;
+    }
+    if (attr != NULL && PyUnicode_Check(attr)) {
+        PyObject *fromname = PyUnicode_FromFormat("%U.%U", name, attr);
+        if (fromname == NULL) {
+            return -1;
+        }
+        int res = PySet_Discard(lazy_modules, fromname);
+        Py_DECREF(fromname);
+        if (res < 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 PyObject *
 _PyImport_LoadLazyImportTstate(PyThreadState *tstate, PyObject *lazy_import)
 {
@@ -3999,6 +4024,10 @@ _PyImport_LoadLazyImportTstate(PyThreadState *tstate, PyObject *lazy_import)
     }
 
     assert(!PyLazyImport_CheckExact(obj));
+
+    if (_PyImport_DiscardLazyModule(tstate, lz->lz_from, lz->lz_attr) < 0) {
+        goto error;
+    }
 
     goto ok;
 
@@ -4254,6 +4283,10 @@ PyImport_ImportModuleLevelObject(PyObject *name, PyObject *globals,
         if (mod == NULL) {
             goto error;
         }
+    }
+
+    if (_PyImport_DiscardLazyModule(tstate, abs_name, NULL) < 0) {
+        goto error;
     }
 
     has_from = 0;
@@ -4586,6 +4619,51 @@ _PyImport_LazyImportModuleLevelObject(PyThreadState *tstate,
             return PyImport_ImportModuleLevelObject(
                 name, globals, locals, fromlist, level
             );
+        }
+    }
+
+    int use_cache = 0;
+    if (PyDict_Check(builtins) &&
+        (fromlist == NULL || fromlist == Py_None ||
+         (PyTuple_Check(fromlist) && PyTuple_GET_SIZE(fromlist) == 0)))
+    {
+        PyObject *import_func;
+        if (PyDict_GetItemRef(builtins, &_Py_ID(__import__), &import_func) < 0) {
+            Py_DECREF(abs_name);
+            return NULL;
+        }
+        use_cache = import_func != NULL &&
+            _PyImport_IsDefaultImportFunc(interp, import_func);
+        Py_XDECREF(import_func);
+    }
+    if (use_cache) {
+        PyObject *mod = import_get_module(tstate, abs_name);
+        if (mod == NULL && PyErr_Occurred()) {
+            Py_DECREF(abs_name);
+            return NULL;
+        }
+        if (mod != NULL && mod != Py_None) {
+            PyObject *spec;
+            int initializing = PyObject_GetOptionalAttr(
+                mod, &_Py_ID(__spec__), &spec);
+            if (initializing > 0) {
+                initializing = _PyModuleSpec_IsInitializing(spec);
+                Py_DECREF(spec);
+            }
+            Py_DECREF(mod);
+            if (initializing < 0) {
+                Py_DECREF(abs_name);
+                return NULL;
+            }
+            if (!initializing) {
+                Py_DECREF(abs_name);
+                // Preserve the ordinary binding rules for dotted imports.
+                return PyImport_ImportModuleLevelObject(
+                    name, globals, locals, fromlist, level);
+            }
+        }
+        else {
+            Py_XDECREF(mod);
         }
     }
 

@@ -3330,7 +3330,16 @@ _PyEval_LazyImportFrom(PyThreadState *tstate, _PyInterpreterFrame *frame, PyObje
     PyObject *ret;
     PyLazyImportObject *d = (PyLazyImportObject *)v;
     PyObject *mod = PyImport_GetModule(d->lz_from);
+    if (mod == NULL && PyErr_Occurred()) {
+        return NULL;
+    }
     if (mod != NULL) {
+        if (mod != Py_None &&
+            _PyImport_DiscardLazyModule(tstate, d->lz_from, NULL) < 0)
+        {
+            Py_DECREF(mod);
+            return NULL;
+        }
         // Check if the module already has the attribute, if so, resolve it
         // eagerly.
         if (PyModule_Check(mod)) {
@@ -3340,10 +3349,17 @@ _PyEval_LazyImportFrom(PyThreadState *tstate, _PyInterpreterFrame *frame, PyObje
                     Py_DECREF(mod);
                     return NULL;
                 }
-                if (ret != NULL) {
+                if (ret != NULL && !PyLazyImport_CheckExact(ret)) {
                     Py_DECREF(mod);
+                    if (_PyImport_DiscardLazyModule(
+                            tstate, d->lz_from, name) < 0)
+                    {
+                        Py_DECREF(ret);
+                        return NULL;
+                    }
                     return ret;
                 }
+                Py_XDECREF(ret);
             }
         }
         Py_DECREF(mod);

@@ -39,6 +39,8 @@ extern PyObject * _PyImport_GetAbsName(
 // Symbol is exported for the JIT on Windows builds.
 PyAPI_FUNC(PyObject *) _PyImport_LoadLazyImportTstate(
     PyThreadState *tstate, PyObject *lazy_import);
+extern int _PyImport_DiscardLazyModule(
+    PyThreadState *tstate, PyObject *name, PyObject *attr);
 typedef enum {
     _Py_LAZY_SUBMODULE_ERROR = -1,
     _Py_LAZY_SUBMODULE_NOT_FOUND = 0,

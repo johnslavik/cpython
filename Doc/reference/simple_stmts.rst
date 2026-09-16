@@ -889,6 +889,10 @@ module is not loaded immediately at the import statement. Instead, a lazy
 proxy object is created and bound to the name. The actual module is loaded
 on first use of that name.
 
+If the module is already fully initialized in :data:`sys.modules`, a
+``lazy import`` statement using the default :func:`__import__` function
+uses the cached module instead of creating a proxy.
+
 Lazy imports are only permitted at module scope. Using :keyword:`lazy`
 inside a function, class body, or
 :keyword:`try`/:keyword:`except`/:keyword:`finally` block raises a
@@ -897,8 +901,9 @@ inside a function, class body, or
 lazy.
 
 When using ``lazy from ... import``, each imported name is bound to a lazy
-proxy object. The first access to any of these names triggers loading of the
-entire module and resolves only that specific name to its actual value.
+proxy object, unless the module is already cached and the attribute is
+already resolved in its namespace. The first access to a proxy triggers loading of
+the entire module and resolves only that specific name to its actual value.
 Other names remain as lazy proxies until they are accessed.
 
 Example::

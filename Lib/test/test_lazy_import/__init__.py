@@ -53,10 +53,10 @@ class LazyImportTests(LazyImportTestCase):
             self.fail('lazy import failed')
 
         self.assertFalse("test.test_lazy_import.data.basic2" in sys.modules)
-        self.assertIn("test.test_lazy_import.data", sys.lazy_modules)
+        self.assertNotIn("test.test_lazy_import.data", sys.lazy_modules)
         self.assertIn("test.test_lazy_import.data.basic2", sys.lazy_modules)
         test.test_lazy_import.data.basic_from_unused.basic2
-        self.assertNotIn("test.test_import.data", sys.lazy_modules)
+        self.assertNotIn("test.test_lazy_import.data.basic2", sys.lazy_modules)
 
     def test_basic_unused_use_externally(self):
         """Lazy import should load module when accessed from outside."""
@@ -1207,9 +1207,6 @@ class SysLazyModulesTrackingTests(LazyImportTestCase):
 
     def test_module_added_to_lazy_modules_on_lazy_import(self):
         """Module should be added to sys.lazy_modules when lazily imported."""
-        # PEP 810 states lazy_modules tracks modules that have been lazily imported
-        # Note: The current implementation keeps modules in lazy_modules even after
-        # reification (primarily for diagnostics and introspection)
         code = textwrap.dedent("""
             import sys
 
@@ -1224,7 +1221,7 @@ class SysLazyModulesTrackingTests(LazyImportTestCase):
             # Trigger reification
             _ = test.test_lazy_import.data.basic2.x
 
-            # Module should still be tracked (for diagnostics per PEP 810)
+            # Resolved modules should no longer be tracked.
             assert "test.test_lazy_import.data.basic2" not in sys.lazy_modules
             print("OK")
         """)
@@ -1249,6 +1246,209 @@ class SysLazyModulesTrackingTests(LazyImportTestCase):
                 f"expected 'json' in sys.lazy_modules, got {set(sys.lazy_modules)}"
             )
             print("OK")
+        """)
+        assert_python_ok("-c", code)
+
+    def test_cached_lazy_import(self):
+        for statement, binding, module in [
+            ("lazy import json", "json", "json"),
+            ("lazy import json.decoder", "json", "json"),
+            ("lazy import json.decoder as decoder", "decoder", "json.decoder"),
+            ("lazy from . import decoder", "decoder", "json.decoder"),
+            ("cached = __lazy_import__('json', fromlist=())", "cached", "json"),
+        ]:
+            with self.subTest(statement=statement):
+                code = textwrap.dedent(f"""
+                    import sys
+                    import json.decoder
+                    namespace = {{"__package__": "json"}}
+                    exec({statement!r}, namespace)
+                    assert namespace[{binding!r}] is sys.modules[{module!r}]
+                    assert "json" not in sys.lazy_modules
+                    assert "json.decoder" not in sys.lazy_modules
+                """)
+                assert_python_ok("-c", code)
+
+    def test_repeated_lazy_import(self):
+        code = textwrap.dedent("""
+            import sys
+            lazy import json
+            assert "json" in sys.lazy_modules
+            json
+            assert "json" not in sys.lazy_modules
+            lazy import json
+            json
+            assert "json" not in sys.lazy_modules
+        """)
+        assert_python_ok("-c", code)
+
+    def test_lazy_from_attribute_removed_on_resolution(self):
+        for cached in (False, True):
+            with self.subTest(cached=cached):
+                code = textwrap.dedent(f"""
+                    import sys
+                    if {cached!r}:
+                        import test.test_lazy_import.data.basic2
+                    lazy from test.test_lazy_import.data.basic2 import x
+                    assert x == 42
+                    assert "test.test_lazy_import.data.basic2" not in sys.lazy_modules
+                    assert "test.test_lazy_import.data.basic2.x" not in sys.lazy_modules
+                """)
+                assert_python_ok("-c", code)
+
+    def test_lazy_from_only_resolved_attribute_removed(self):
+        code = textwrap.dedent("""
+            import sys
+            lazy from test.test_lazy_import.data.basic2 import x, missing
+            assert x == 42
+            assert "test.test_lazy_import.data.basic2" not in sys.lazy_modules
+            assert "test.test_lazy_import.data.basic2.x" not in sys.lazy_modules
+            assert "test.test_lazy_import.data.basic2.missing" in sys.lazy_modules
+            try:
+                missing
+            except ImportError:
+                pass
+            else:
+                raise AssertionError("expected ImportError")
+            assert "test.test_lazy_import.data.basic2.missing" in sys.lazy_modules
+        """)
+        assert_python_ok("-c", code)
+
+    def test_lazy_import_resolved_after_eager_import(self):
+        code = textwrap.dedent("""
+            import sys
+            lazy from test.test_lazy_import.data.basic2 import x
+            import test.test_lazy_import.data.basic2
+            assert x == 42
+            assert "test.test_lazy_import.data.basic2" not in sys.lazy_modules
+            assert "test.test_lazy_import.data.basic2.x" not in sys.lazy_modules
+        """)
+        assert_python_ok("-c", code)
+
+    def test_cached_import_removes_lazy_module(self):
+        for statement in (
+            "import cached_module",
+            'importlib.import_module("cached_module")',
+            "assert cached_module is module",
+        ):
+            with self.subTest(statement=statement):
+                code = textwrap.dedent(f"""
+                    import sys
+                    import types
+                    import importlib
+                    lazy import cached_module
+                    assert "cached_module" in sys.lazy_modules
+                    module = types.ModuleType("cached_module")
+                    sys.modules["cached_module"] = module
+                    {statement}
+                    assert "cached_module" not in sys.lazy_modules
+                    assert cached_module is module
+                """)
+                assert_python_ok("-c", code)
+
+    def test_cached_dynamic_attribute_removed_on_resolution(self):
+        code = textwrap.dedent("""
+            import sys
+            import types
+            import test.test_lazy_import.data.module_with_getattr
+            lazy from test.test_lazy_import.data.module_with_getattr import dynamic_attr
+            name = "test.test_lazy_import.data.module_with_getattr"
+            assert name not in sys.lazy_modules
+            assert name + ".dynamic_attr" in sys.lazy_modules
+            assert type(globals()["dynamic_attr"]) is types.LazyImportType
+            assert dynamic_attr == "from_getattr"
+            assert name + ".dynamic_attr" not in sys.lazy_modules
+        """)
+        assert_python_ok("-c", code)
+
+    def test_repeated_lazy_from_attributes(self):
+        code = textwrap.dedent("""
+            import sys
+            lazy from test.test_lazy_import.data.basic2 import x, f
+            name = "test.test_lazy_import.data.basic2"
+            assert x == 42
+            assert name not in sys.lazy_modules
+            assert name + ".x" not in sys.lazy_modules
+            assert name + ".f" in sys.lazy_modules
+            assert f() is None
+            assert name + ".f" not in sys.lazy_modules
+            lazy from test.test_lazy_import.data.basic2 import x, f
+            assert globals()["x"] == 42
+            assert name not in sys.lazy_modules
+            assert name + ".x" not in sys.lazy_modules
+            assert name + ".f" not in sys.lazy_modules
+        """)
+        assert_python_ok("-c", code)
+
+    def test_initializing_module_stays_lazy(self):
+        code = textwrap.dedent("""
+            import sys
+            import types
+            module = types.ModuleType("initializing_module")
+            module.__spec__ = types.SimpleNamespace(_initializing=True)
+            sys.modules["initializing_module"] = module
+            namespace = {}
+            exec("lazy import initializing_module", namespace)
+            assert isinstance(namespace["initializing_module"], types.LazyImportType)
+            assert "initializing_module" in sys.lazy_modules
+            module.__spec__._initializing = False
+            exec("initializing_module", namespace)
+            assert "initializing_module" not in sys.lazy_modules
+        """)
+        assert_python_ok("-c", code)
+
+    def test_blocked_module_stays_lazy(self):
+        code = textwrap.dedent("""
+            import sys
+            sys.modules["blocked_module"] = None
+            lazy import blocked_module
+            assert "blocked_module" in sys.lazy_modules
+            try:
+                blocked_module
+            except ModuleNotFoundError:
+                pass
+            else:
+                raise AssertionError("expected ModuleNotFoundError")
+            assert "blocked_module" in sys.lazy_modules
+        """)
+        assert_python_ok("-c", code)
+
+    def test_cached_lazy_import_uses_custom_import(self):
+        code = textwrap.dedent("""
+            import builtins
+            import sys
+            import types
+            calls = []
+            value = object()
+            def import_func(*args):
+                calls.append(args[0])
+                return value
+            namespace = {
+                "__builtins__": dict(vars(builtins), __import__=import_func),
+            }
+            exec("lazy import sys", namespace)
+            assert isinstance(namespace["sys"], types.LazyImportType)
+            assert calls == []
+            exec("result = sys", namespace)
+            assert namespace["result"] is value
+            assert calls == ["sys"]
+            assert "sys" not in sys.lazy_modules
+        """)
+        assert_python_ok("-c", code)
+
+    def test_cached_lazy_attribute_removed_on_resolution(self):
+        code = textwrap.dedent("""
+            import sys
+            import types
+            module = types.ModuleType("cached_module")
+            sys.modules["cached_module"] = module
+            exec("lazy from test.test_lazy_import.data.basic2 import x",
+                 module.__dict__)
+            lazy from cached_module import x
+            assert "cached_module.x" in sys.lazy_modules
+            assert x == 42
+            assert "cached_module.x" not in sys.lazy_modules
+            assert "test.test_lazy_import.data.basic2.x" not in sys.lazy_modules
         """)
         assert_python_ok("-c", code)
 

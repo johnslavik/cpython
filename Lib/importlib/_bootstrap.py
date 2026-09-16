@@ -1362,6 +1362,7 @@ def _find_and_load(name, import_, *, lazy_submodule=False):
         message = f'import of {name} halted; None in sys.modules'
         raise ModuleNotFoundError(message, name=name)
 
+    _imp._set_lazy_attributes(module, name)
     return module
 
 

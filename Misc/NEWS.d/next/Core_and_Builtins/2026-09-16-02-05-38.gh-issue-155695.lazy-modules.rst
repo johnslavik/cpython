@@ -1,0 +1,3 @@
+Remove resolved module and attribute names from :data:`sys.lazy_modules`
+consistently, including when the module is already cached. Plain lazy imports
+now reuse fully initialized cached modules instead of creating lazy proxies.
