@@ -859,6 +859,89 @@ class TestDocTestSuiteVerbosity(unittest.TestCase):
 
 class TestDocTestFinder(unittest.TestCase):
 
+    @contextlib.contextmanager
+    def alias_module(self, source):
+        name = '_doctest_aliases'
+        with tempfile.TemporaryDirectory() as directory:
+            filename = os.path.join(directory, name + '.py')
+            with open(filename, 'w', encoding='utf-8') as file:
+                file.write(source)
+            spec = importlib.util.spec_from_file_location(name, filename)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            try:
+                spec.loader.exec_module(module)
+                yield module
+            finally:
+                del sys.modules[name]
+
+    @unittest.skipUnless(support.HAVE_DOCSTRINGS, 'requires docstrings')
+    def test_type_alias_discovery(self):
+        source = '\n'.join([
+            'type Alias[T] = undefined[T]',
+            '""">>> Alias.__name__',
+            "'Alias'",
+            '"""',
+            'class Container:',
+            '    type Nested = also_undefined',
+            '    """>>> Container.Nested.__name__',
+            "    'Nested'",
+            '    """',
+            'type Empty = int',
+            'Duplicate = Alias',
+            '__test__ = {"again": Alias}',
+        ])
+        with self.alias_module(source) as module:
+            finder = doctest.DocTestFinder()
+            tests = finder.find(module)
+            self.assertEqual([test.name for test in tests],
+                             ['_doctest_aliases.Alias',
+                              '_doctest_aliases.Container.Nested'])
+            self.assertEqual([test.lineno for test in tests], [1, 6])
+            self.assertEqual(doctest.testmod(module), (0, 2))
+            result = unittest.TestResult()
+            doctest.DocTestSuite(module).run(result)
+            self.assertEqual(result.testsRun, 2)
+            self.assertTrue(result.wasSuccessful())
+            runner = doctest.DocTestRunner()
+            for test in tests:
+                self.assertEqual(runner.run(test), (0, 1))
+            self.assertEqual(finder.find(module.Alias)[0].lineno, 1)
+            self.assertEqual([test.name for test in finder.find(module, module=False)],
+                             [test.name for test in tests])
+            self.assertEqual(doctest.DocTestFinder(recurse=False).find(module), [])
+            self.assertEqual(finder.find(module.Empty), [])
+            self.assertEqual(len(doctest.DocTestFinder(
+                exclude_empty=False).find(module.Empty)), 1)
+            foreign = types.ModuleType('foreign')
+            foreign.Alias = module.Alias
+            self.assertEqual(finder.find(foreign), [])
+            foreign.__test__ = {'alias': module.Alias}
+            explicit = finder.find(foreign)
+            self.assertEqual(len(explicit), 1)
+            self.assertEqual(explicit[0].name, 'foreign.__test__.alias')
+
+    @unittest.skipUnless(support.HAVE_DOCSTRINGS, 'requires docstrings')
+    def test_type_alias_lineno(self):
+        source = ('type Alias[T] = (\n    undefined[T]\n)\n'
+                  '# A comment before the docstring.\n\n'
+                  '""">>> 1 + 1\n3\n"""\n')
+        with self.alias_module(source) as module:
+            finder = doctest.DocTestFinder()
+            test = finder.find(module.Alias)[0]
+            self.assertEqual(test.lineno, 5)
+            output = io.StringIO()
+            result = doctest.DocTestRunner().run(test, out=output.write)
+            self.assertEqual(result, (1, 1))
+            self.assertIn('line 6, in Alias', output.getvalue())
+
+        from typing import TypeAliasType
+        alias = TypeAliasType('Alias', int)
+        alias.__doc__ = ">>> 1 + 1\n2\n"
+        test = finder.find(alias)[0]
+        self.assertIsNone(test.lineno)
+        self.assertEqual(doctest.DocTestRunner().run(test), (0, 1))
+
     def test_issue35753(self):
         # This import of `call` should trigger issue35753 when
         # DocTestFinder.find() is called due to inspect.unwrap() failing,

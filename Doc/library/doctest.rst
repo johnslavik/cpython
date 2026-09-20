@@ -303,8 +303,12 @@ sections.
 Which Docstrings Are Examined?
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The module docstring, and all function, class and method docstrings are
+The module docstring, and all function, class, method, and type alias docstrings are
 searched.  Objects imported into the module are not searched.
+
+.. versionchanged:: 3.16
+   Added discovery of type alias docstrings, including aliases in classes
+   and :attr:`module.__test__`. Alias values are not evaluated during discovery.
 
 .. currentmodule:: None
 
@@ -317,8 +321,8 @@ In addition, there are cases when you want tests to be part of a module but not 
 of the help text, which requires that the tests not be included in the docstring.
 Doctest looks for a module-level variable called ``__test__`` and uses it to locate other
 tests. If ``M.__test__`` exists, it must be a dict, and each
-entry maps a (string) name to a function object, class object, or string.
-Function and class object docstrings found from ``M.__test__`` are searched, and
+entry maps a (string) name to a function object, class object, type alias, or string.
+Function, class, and type alias docstrings found from ``M.__test__`` are searched, and
 strings are treated as if they were docstrings.  In output, a key ``K`` in
 ``M.__test__`` appears with name ``M.__test__.K``.
 
@@ -343,12 +347,12 @@ class object, or module; if so, :mod:`!doctest`
 searches them recursively for docstrings, which are then scanned for tests.
 
 Any classes found are recursively searched similarly, to test docstrings in
-their contained methods and nested classes.
+their contained methods, nested classes, and type aliases.
 
 .. note::
 
-   ``doctest`` can only automatically discover classes and functions that are
-   defined at the module level or inside other classes.
+   ``doctest`` can only automatically discover classes, functions, and type
+   aliases that are defined at the module level or inside other classes.
 
    Since nested classes and functions only exist when an outer function
    is called, they cannot be discovered. Define them outside to make them visible.
@@ -1392,7 +1396,7 @@ DocTestFinder objects
    A processing class used to extract the :class:`DocTest`\ s that are relevant to
    a given object, from its docstring and the docstrings of its contained objects.
    :class:`DocTest`\ s can be extracted from modules, classes, functions,
-   methods, staticmethods, classmethods, and properties.
+   methods, staticmethods, classmethods, properties, and type aliases.
 
    The optional argument *verbose* can be used to display the objects searched by
    the finder.  It defaults to ``False`` (no output).

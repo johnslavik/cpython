@@ -1,0 +1,2 @@
+Add :mod:`doctest` discovery of type alias docstrings in modules, classes,
+and ``__test__`` dictionaries without evaluating alias values.

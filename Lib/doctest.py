@@ -104,6 +104,7 @@ import sys
 import traceback
 import types
 import unittest
+from _typing import TypeAliasType
 from io import StringIO, TextIOWrapper, BytesIO
 from collections import namedtuple
 lazy import _colorize  # Used in doctests
@@ -842,7 +843,7 @@ class DocTestFinder:
     object, from its docstring and the docstrings of its contained
     objects.  Doctests can currently be extracted from the following
     object types: modules, functions, classes, methods, staticmethods,
-    classmethods, and properties.
+    classmethods, properties, and type aliases.
     """
 
     def __init__(self, verbose=False, parser=DocTestParser(),
@@ -921,15 +922,16 @@ class DocTestFinder:
         # Read the module's source code.  This is used by
         # DocTestFinder._find_lineno to find the line number for a
         # given object's docstring.
+        source_obj = obj.evaluate_value if isinstance(obj, TypeAliasType) else obj
         try:
-            file = inspect.getsourcefile(obj)
+            file = inspect.getsourcefile(source_obj)
         except (TypeError, OSError):
             source_lines = None
         else:
             if not file:
                 # Check to see if it's one of our special internal "files"
                 # (see __patched_linecache_getlines).
-                file = inspect.getfile(obj)
+                file = inspect.getfile(source_obj)
                 if not file[0]+file[-2:] == '<]>': file = None
             if file is None:
                 source_lines = None
@@ -1032,8 +1034,9 @@ class DocTestFinder:
             for valname, val in obj.__dict__.items():
                 valname = '%s.%s' % (name, valname)
 
-                # Recurse to functions & classes.
-                if ((self._is_routine(val) or inspect.isclass(val)) and
+                # Recurse to functions, classes, and type aliases.
+                if ((self._is_routine(val) or inspect.isclass(val) or
+                     isinstance(val, TypeAliasType)) and
                     self._from_module(module, val)):
                     self._find(tests, val, valname, module, source_lines,
                                globs, seen)
@@ -1046,10 +1049,11 @@ class DocTestFinder:
                                      "must be strings: %r" %
                                      (type(valname),))
                 if not (inspect.isroutine(val) or inspect.isclass(val) or
-                        inspect.ismodule(val) or isinstance(val, str)):
+                        inspect.ismodule(val) or
+                        isinstance(val, (str, TypeAliasType))):
                     raise ValueError("DocTestFinder.find: __test__ values "
                                      "must be strings, functions, methods, "
-                                     "classes, or modules: %r" %
+                                     "classes, modules, or type aliases: %r" %
                                      (type(val),))
                 valname = '%s.__test__.%s' % (name, valname)
                 self._find(tests, val, valname, module, source_lines,
@@ -1062,9 +1066,9 @@ class DocTestFinder:
                 if isinstance(val, (staticmethod, classmethod)):
                     val = val.__func__
 
-                # Recurse to methods, properties, and nested classes.
+                # Recurse to methods, properties, nested classes, and aliases.
                 if ((inspect.isroutine(val) or inspect.isclass(val) or
-                      isinstance(val, property)) and
+                      isinstance(val, (property, TypeAliasType))) and
                       self._from_module(module, val)):
                     valname = '%s.%s' % (name, valname)
                     self._find(tests, val, valname, module, source_lines,
@@ -1134,6 +1138,13 @@ class DocTestFinder:
                     lineno = i
                     break
 
+        # The evaluator retains the alias declaration's source position.
+        # Reading its code does not evaluate the alias value.
+        if isinstance(obj, TypeAliasType):
+            if docstring is None:
+                return None
+            obj = getattr(obj.evaluate_value, '__code__', None)
+
         # Find the line number for functions & methods.
         if inspect.ismethod(obj): obj = obj.__func__
         if isinstance(obj, property):
@@ -1157,9 +1168,8 @@ class DocTestFinder:
 
         # Find the line number where the docstring starts.  Assume
         # that it's the first line that begins with a quote mark.
-        # Note: this could be fooled by a multiline function
-        # signature, where a continuation line begins with a quote
-        # mark.
+        # Note: this could be fooled by a multiline function signature
+        # or alias expression where a continuation line begins with a quote.
         if lineno is not None:
             if source_lines is None:
                 return lineno+1
