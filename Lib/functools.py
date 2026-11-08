@@ -1184,6 +1184,21 @@ class _cached_method:
         return cached_func
 
 
+class _cached_descriptor_method:
+    def __init__(self, descriptor, /, maxsize=None, typed=False):
+        self.is_staticmethod = isinstance(descriptor, staticmethod)
+        func = descriptor.__func__
+        update_wrapper(self, descriptor)
+        self.cached = lru_cache(maxsize=maxsize, typed=typed)(func)
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        if self.is_staticmethod:
+            return self.cached
+        return MethodType(self.cached, owner)
+
+
 def cached_method(func=None, /, maxsize=None, typed=False):
     """
     A caching decorator for use on instance methods.
@@ -1201,11 +1216,12 @@ def cached_method(func=None, /, maxsize=None, typed=False):
         raise TypeError(
             'Expected maxsize to be an integer, a callable, or None')
     if func is None:
-        def decorator(func):
-            return _cached_method(func, maxsize=maxsize, typed=typed)
-        return decorator
-    else:
-        return _cached_method(func, maxsize=maxsize, typed=typed)
+        return partial(cached_method, maxsize=maxsize, typed=typed)
+    if isinstance(func, property):
+        raise TypeError("use `cached_property` instead")
+    if isinstance(func, (classmethod, staticmethod)):
+        return _cached_descriptor_method(func, maxsize=maxsize, typed=typed)
+    return _cached_method(func, maxsize=maxsize, typed=typed)
 
 
 ################################################################################
